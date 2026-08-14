@@ -18,7 +18,7 @@ Tauri 2 壳 (Rust)
 - 退出时 SIGTERM → 3s 宽限 → SIGKILL；启动时回收孤儿进程（pidfile + `ps -E` 标记校验）。
 - M2 已完成：dsh 安装到应用数据目录（版本化 + `current` 指针 + 首次自动 bootstrap）。
 - 关闭按钮二次确认：完全退出 / 后台运行（隐藏窗口，点击 Dock 图标恢复）。
-- 非侵入事件监听（`listener.rs`）：以额外消费者身份接入 dsh 的 `/api/events.mux` 与 `/api/events.host`（不修改 dsh），`approval/requested`、`question/requested`、`host/agent-error` 等事件触发原生通知 + Dock 徽标 + 窗口聚焦。
+- 非侵入事件监听（`listener.rs`）：壳以**额外消费者**身份接入 dsh 公开下行流 `/api/events.mux` 与 `/api/events.host`（WebSocket，纯只读——服务器在收到任何上行消息时会主动关闭连接）。host 向所有已连接消费者扇出事件帧，并在新连接打开时**重放未决条目**，因此壳的监听不改变 GUI 的任何行为，也不修改 dsh 的任何代码或内部状态——只消费公开协议。`approval/requested`、`question/requested`、`host/agent-error` 等事件映射为系统通知（macOS 消息中心横幅为主通道）+ Dock 徽标；系统通知不可用时回退为应用内 Toast 横幅（锚定主窗口所在显示器右上角，审批/提问类常驻直至点击或请求解决）。
 - 应用菜单：**检查更新…**（registry 检测 → 询问 → 蓝绿安装 → 询问重启）、**安装插件…**（shell UI 面板，执行 `dsh plugin --profile web add <pkg>`，日志实时流式显示）、**重启 dsh**、退出。
 - 插件离线安装：zip 包 / 目录本地安装（`add <本地路径> --offline`，内网可用）。
 - M3 已完成：自动更新调度器（autoUpdate + intervalHours + lastCheck 防抖）、版本保留（设置面板可配 N，默认 1、最大 10）、更新面板版本列表一键切换、新版本启动失败自动回滚（lastKnownGood）、更新历史记录。
@@ -41,12 +41,27 @@ pnpm desktop:dev        # tauri dev（需系统 Node；dsh 路径经 DSH_BIN 或
 
 本仓库把 cargo 缓存（`.cargo-home/`）与 pnpm store（`.pnpm-store/`）放在仓库内，规避用户级 npm 缓存问题（本机 `~/.npm` 损坏）与文件沙箱限制。
 
+## macOS 通知：替换构建后需手动刷新
+
+macOS 把通知授权绑定在应用的**代码签名身份**上（`Identifier` + `CDHash` + 绑定进签名的 `Info.plist`），而不是应用名字：
+
+- 打包必须做正规 bundle 签名（已配置 `bundle.macOS.signingIdentity: "-"`）。否则签名身份与 `CFBundleIdentifier` 不一致（曾出现 `Identifier=dsh_desktop-<hash>`、`Info.plist=not bound`），`usernoted` 无法识别应用，授权请求被直接拒绝（`UNErrorDomain error 1`：Notifications are not allowed for this application）且**永不弹出授权对话框**。
+- 当前是 ad-hoc 签名，`CDHash` 每次构建都会变，所以**每替换一次构建，通知授权就失效一次**——替换后首次触发审批/提问时需要重新点「允许」。
+- 替换 `.app` 后运行（刷新通知守护进程与 LaunchServices 残留记录）：
+
+  ```bash
+  pnpm notify:refresh    # = bash scripts/refresh-notifications.sh [app路径]
+  ```
+
+- 一劳永逸的方案是 Developer ID 签名 + 公证（M5-3，需要 Apple 开发者账号）。在此之前，应用数据目录 `logs/notify.log` 会记录每次事件的授权状态与错误（`sysnotify: status=…`、`granted=… err=…`），排查通知问题时先看它。
+
 ## 目录
 
 ```
 apps/desktop/           Tauri 壳
   src-tauri/src/        Rust: dsh.rs (进程监督) / lib.rs (窗口与命令)
   src/                  shell UI: splash / 错误页 / 重试
+scripts/                refresh-notifications.sh（替换构建后刷新 macOS 通知身份）
 .intermediate/…/        规划与验证文档
 ```
 
