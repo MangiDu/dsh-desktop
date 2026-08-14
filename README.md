@@ -19,6 +19,7 @@ Tauri 2 壳 (Rust)
 - M2 已完成：dsh 安装到应用数据目录（版本化 + `current` 指针 + 首次自动 bootstrap）。
 - 关闭按钮二次确认：完全退出 / 后台运行（隐藏窗口，点击 Dock 图标恢复）。
 - 非侵入事件监听（`listener.rs`）：壳以**额外消费者**身份接入 dsh 公开下行流 `/api/events.mux` 与 `/api/events.host`（WebSocket，纯只读——服务器在收到任何上行消息时会主动关闭连接）。host 向所有已连接消费者扇出事件帧，并在新连接打开时**重放未决条目**，因此壳的监听不改变 GUI 的任何行为，也不修改 dsh 的任何代码或内部状态——只消费公开协议。`approval/requested`、`question/requested`、`host/agent-error` 等事件映射为系统通知（macOS 使用消息中心横幅，**不显示自定义 Toast**）+ Dock 徽标；其他平台使用应用内 Toast 横幅（锚定主窗口所在显示器右上角，审批/提问类常驻直至点击或请求解决）。
+- macOS 交互加固：`acceptsFirstMouse` 全局置 YES（非 key 窗口首次点击直达，浏览器式行为）；任何菜单结束跟踪 / 应用重新激活后把 key 还给主窗口；WKWebView 禁用压力手势。另注入**点击补偿器**（初始化脚本）：dsh 侧栏在 mousedown 瞬间会滚动（条目聚焦/选中触发），光标下节点被换、WebKit 丢弃 click——补偿器在按下后 90ms 内未收到 click、位移 <6px、原节点仍在文档时补发一次 click（真实拖拽/双击/右键不受影响），保证侧栏工作区/会话快速来回点击一次触达。
 - 应用菜单：**检查更新…**（registry 检测 → 询问 → 蓝绿安装 → 询问重启）、**安装插件…**（shell UI 面板，执行 `dsh plugin --profile web add <pkg>`，日志实时流式显示）、**重启 dsh**、退出。
 - 插件离线安装：zip 包 / 目录本地安装（`add <本地路径> --offline`，内网可用）。
 - M3 已完成：自动更新调度器（autoUpdate + intervalHours + lastCheck 防抖）、版本保留（设置面板可配 N，默认 1、最大 10）、更新面板版本列表一键切换、新版本启动失败自动回滚（lastKnownGood）、更新历史记录。

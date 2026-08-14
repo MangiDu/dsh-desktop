@@ -48,55 +48,6 @@ const HANDSHAKE_PREFIX: &str = "dsh web: http://127.0.0.1:";
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 const RING_CAP: usize = 400;
 
-/// Passive page-side logger for the "second click" diagnosis: capture-phase
-/// mousedown/mouseup/click with a compact target descriptor, printed to the
-/// Web Inspector console. Read-only: it never touches page state or events.
-const CLICK_LOG_SCRIPT: &str = r##"
-(function () {
-  function desc(t) {
-    try {
-      if (!t) return "?";
-      var el = t;
-      var s = (el.tagName || "?").toLowerCase();
-      if (el.id) s += "#" + el.id;
-      var c = String(el.className && el.className.baseVal !== undefined ? el.className.baseVal : el.className || "").trim();
-      if (c) s += "." + c.split(/\s+/).slice(0, 3).join(".");
-      return s;
-    } catch (e) { return "?"; }
-  }
-  function log(kind, e) {
-    try {
-      console.log("[dsh-shell-click]", kind,
-        "target=" + desc(e.target),
-        "down=" + desc(window.__dshDownTarget),
-        "detail=" + e.detail,
-        "x=" + e.clientX, "y=" + e.clientY,
-        "prev=" + (e.defaultPrevented ? "1" : "0"));
-    } catch (err) {}
-  }
-  window.__dshScrolled = 0;
-  document.addEventListener("scroll", function () { window.__dshScrolled++; }, true);
-  ["mousedown", "click", "dblclick", "pointerdown", "pointercancel", "contextmenu"].forEach(function (k) {
-    document.addEventListener(k, function (e) { log(k, e); }, true);
-  });
-  document.addEventListener("mousedown", function (e) {
-    window.__dshDownNode = e.target;
-    window.__dshDownTarget = e.target;
-    window.__dshScrolled = 0;
-    log("mousedown", e);
-  }, true);
-  document.addEventListener("pointerup", function (e) { log("pointerup", e); }, true);
-  document.addEventListener("mouseup", function (e) {
-    log("mouseup", e);
-    try {
-      console.log("[dsh-shell-click]", "same-node",
-        "same=" + (e.target === window.__dshDownNode ? "1" : "0"),
-        "connected=" + (window.__dshDownNode && window.__dshDownNode.isConnected ? "1" : "0"),
-        "scrolled=" + window.__dshScrolled);
-    } catch (err) {}
-  }, true);
-})();
-"##;
 
 /// Compensates for clicks lost to mid-gesture scrolls: the page scrolls
 /// between mousedown and mouseup (the dsh sidebar scrolls when an item
@@ -550,12 +501,10 @@ fn on_ready(app: &AppHandle, shared: &Arc<Shared>, id: u64, port: u16) {
             // First click delivers immediately even when the window is not
             // key (browser-like); without this the first click only focuses.
             .accept_first_mouse(true)
-            // Diagnostics for the "second click" issue: make the page
-            // inspectable from Safari's Develop menu, passively log
-            // mousedown/mouseup/click with target descriptors to the
-            // console, and compensate clicks lost to mid-gesture scrolls.
+            // Browser-like first click and the click compensator for the
+            // sidebar's mid-gesture scroll swap; the page stays inspectable
+            // from Safari's Develop menu for future debugging.
             .devtools(true)
-            .initialization_script(CLICK_LOG_SCRIPT)
             .initialization_script(CLICK_COMPENSATOR_SCRIPT)
             .build()
         {

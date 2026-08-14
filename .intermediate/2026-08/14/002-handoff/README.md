@@ -57,6 +57,7 @@ UI：`apps/desktop/` Vite 多页(index.html 面板集 + toast.html)，事件协�
 9. **tauri dev 会跑 `cargo run --no-default-features`**：与裸 `cargo build`（默认 features）feature 集合不同，互相切换会触发全量重编（~1min），正常现象。
 10. 窗口竞态三连（面板事件/Toast 载荷/意图）都靠**拉取模型**解决：Rust 状态存值 + 页面加载后 invoke 拉取 + 事件实时更新。
 11. **Toast 窗口是复用的、首次 6s 自隐后永不再弹**——任何"第二次不弹提示"的 bug 先查窗口是否被 hide 后没有 re-show（`listener.rs toast()` 已修复：每次事件 emit 后 `show()`；macOS `show()`=setIsVisible，不抢焦点）。
+12. **WKWebView 丢点击排查法（"需要二次点击"）**：用注入式捕获探针（mousedown/mouseup/click + 节点同一性 same-node + 期间 scroll 计数；见 git 历史 `16cfa03`）定位机制。本案例最终锁定：**dsh 侧栏在 mousedown 瞬间滚动（条目聚焦/选中触发）→ 光标下节点被换 → WebKit 丢弃 click**（same=0, scrolled=1）。修复=壳注入 90ms/6px 门控点击补偿器（`CLICK_COMPENSATOR_SCRIPT`）。途中已排除并保留的加固：非 key 窗口首击（acceptsFirstMouse swizzle + 菜单/激活后 key 归还）、Force Touch 查词（`pressureConfiguration=nil`）。另注意：wry 的 `set_inspectable` 只在 debug 或 tauri `devtools` feature 下编译，release 调试必须开该 feature。
 
 ## 5. 开发运行
 
