@@ -42,21 +42,21 @@ struct Envelope {
 
 /// macOS system notifications via UNUserNotificationCenter (the modern
 /// API — notification-center banners, non-blocking, web-notification-like).
-/// The toast window remains the fallback when permission is not granted
-/// (e.g. before the first permission prompt is answered).
+/// The in-app toast banner is the guaranteed channel on every event; the
+/// system banner is best-effort, attempted only when the live authorization
+/// status allows it. Every decision is appended to `appdata/logs/notify.log`
+/// so notification failures are diagnosable without a debugger.
 #[cfg(target_os = "macos")]
 pub mod sysnotify {
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::ptr::NonNull;
 
     use block2::RcBlock;
     use objc2::runtime::Bool;
     use objc2_foundation::{NSError, NSString};
     use objc2_user_notifications::{
         UNAuthorizationOptions, UNMutableNotificationContent, UNNotificationRequest,
-        UNUserNotificationCenter,
+        UNNotificationSettings, UNUserNotificationCenter,
     };
-
-    static GRANTED: AtomicBool = AtomicBool::new(false);
 
     /// UNUserNotificationCenter raises an uncaught NSException when the
     /// process has no app bundle (bundleProxyForCurrentProcess is nil) —
@@ -73,15 +73,35 @@ pub mod sysnotify {
         segs.windows(2).any(|w| w[0] == "Contents" && w[1] == "MacOS")
     }
 
-    pub fn request_permission() {
+    /// UNAuthorizationStatus value → readable name (0 notDetermined, 1 denied,
+    /// 2 authorized, 3 provisional, 4 ephemeral, -1 unbundled/unknown).
+    pub fn status_name(s: i64) -> &'static str {
+        match s {
+            0 => "notDetermined",
+            1 => "denied",
+            2 => "authorized",
+            3 => "provisional",
+            4 => "ephemeral",
+            _ => "unknown",
+        }
+    }
+
+    /// Ask macOS for notification permission. The system prompt appears only
+    /// when the status is still notDetermined; a previous deny/grant is
+    /// answered silently and re-requests never re-prompt (that is macOS
+    /// policy, not something code can override).
+    pub fn request_permission(app: &tauri::AppHandle) {
         if !in_app_bundle() {
-            println!("[dsh] unbundled dev binary: system notifications unavailable, using toast");
+            super::diag(app, "sysnotify: unbundled dev binary, system notifications unavailable");
             return;
         }
         let center = UNUserNotificationCenter::currentNotificationCenter();
+        let app = app.clone();
         let handler = RcBlock::new(move |granted: Bool, _err: *mut NSError| {
-            GRANTED.store(granted.as_bool(), Ordering::SeqCst);
-            println!("[dsh] system notification permission: {}", granted.as_bool());
+            super::diag(
+                &app,
+                &format!("sysnotify: authorization request answered: granted={}", granted.as_bool()),
+            );
         });
         center.requestAuthorizationWithOptions_completionHandler(
             UNAuthorizationOptions::Alert | UNAuthorizationOptions::Sound | UNAuthorizationOptions::Badge,
@@ -89,11 +109,26 @@ pub mod sysnotify {
         );
     }
 
-    pub fn granted() -> bool {
-        in_app_bundle() && GRANTED.load(Ordering::SeqCst)
+    /// Read the live authorization status and pass its numeric value to `f`.
+    /// Passes -1 for unbundled binaries (no bundle → no notification center).
+    fn with_status(f: impl Fn(i64) + Send + 'static) {
+        if !in_app_bundle() {
+            f(-1);
+            return;
+        }
+        let center = UNUserNotificationCenter::currentNotificationCenter();
+        let block = RcBlock::new(move |settings: NonNull<UNNotificationSettings>| {
+            let status = unsafe { settings.as_ptr().as_ref() }
+                .map(|s| s.authorizationStatus().0 as i64)
+                .unwrap_or(-1);
+            f(status);
+        });
+        center.getNotificationSettingsWithCompletionHandler(&block);
     }
 
-    pub fn send(title: &str, body: &str) {
+    /// Post the system banner; `on_error` receives the NSError (non-nil when
+    /// the request was rejected, e.g. not authorized).
+    pub fn send(title: &str, body: &str, on_error: RcBlock<dyn Fn(*mut NSError)>) {
         if !in_app_bundle() {
             return;
         }
@@ -107,20 +142,74 @@ pub mod sysnotify {
             .unwrap_or(0);
         let id = NSString::from_str(&format!("dsh-toast-{nanos}"));
         let request = UNNotificationRequest::requestWithIdentifier_content_trigger(&id, &content, None);
-        center.addNotificationRequest_withCompletionHandler(&request, None);
+        center.addNotificationRequest_withCompletionHandler(&request, Some(&on_error));
+    }
+
+    /// Best-effort system banner keyed off the LIVE authorization status:
+    /// authorized/provisional → send (delivery errors are logged);
+    /// notDetermined → re-request permission (the startup request may have
+    /// run before the app was fully active, which macOS can silently drop);
+    /// denied/unknown → skip and log. The in-app toast already covered the
+    /// event, so this channel is purely additive.
+    pub fn notify_if_authorized(app: &tauri::AppHandle, title: &str, body: &str) {
+        let app = app.clone();
+        let title = title.to_string();
+        let body = body.to_string();
+        with_status(move |status| {
+            super::diag(
+                &app,
+                &format!("sysnotify: status={status} ({})", status_name(status)),
+            );
+            match status {
+                2 | 3 => {
+                    let app_err = app.clone();
+                    let on_error = RcBlock::new(move |err: *mut NSError| {
+                        let msg = unsafe { err.as_ref() }
+                            .map(|e| e.localizedDescription().to_string())
+                            .unwrap_or_else(|| "unknown".to_string());
+                        super::diag(&app_err, &format!("sysnotify: delivery error: {msg}"));
+                    });
+                    send(&title, &body, on_error);
+                }
+                0 => {
+                    super::diag(&app, "sysnotify: notDetermined, re-requesting authorization");
+                    request_permission(&app);
+                }
+                _ => {}
+            }
+        });
     }
 }
 
-/// Event entry point: system notification when permission is granted,
-/// the in-app toast banner otherwise.
+/// Event entry point: the in-app toast banner always shows (guaranteed,
+/// permission-free channel); on macOS a best-effort system banner is added
+/// on top when the notification authorization allows it.
 pub fn notify_event(app: &AppHandle, shared: &Arc<crate::dsh::Shared>, title: &str, body: &str) {
-    #[cfg(target_os = "macos")]
-    if sysnotify::granted() {
-        println!("[dsh] system notify: {title} :: {body}");
-        sysnotify::send(title, body);
-        return;
-    }
+    diag(app, &format!("notify: {title} :: {body}"));
     toast(app, shared, title, body);
+    #[cfg(target_os = "macos")]
+    sysnotify::notify_if_authorized(app, title, body);
+}
+
+/// Best-effort persistent diagnostic line: `println!` plus an append to
+/// `appdata/logs/notify.log` (the app's stdout is lost for GUI-launched
+/// bundles, so the file is the readable record).
+pub fn diag(app: &AppHandle, msg: &str) {
+    println!("[dsh] {msg}");
+    let Ok(dir) = app.path().app_data_dir() else {
+        return;
+    };
+    let logs = dir.join("logs");
+    let _ = std::fs::create_dir_all(&logs);
+    let path = logs.join("notify.log");
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        use std::io::Write;
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let _ = writeln!(f, "[{secs}] {msg}");
+    }
 }
 
 pub const TOAST_LABEL: &str = "toast";
@@ -137,6 +226,7 @@ struct ToastPayload {
 /// the main window only when the user clicks it.
 pub fn toast(app: &AppHandle, shared: &Arc<crate::dsh::Shared>, title: &str, body: &str) {
     println!("[dsh] alert: {title} :: {body}");
+    diag(app, &format!("toast: showing banner ({title})"));
     // Store the payload first: a freshly created toast window loads the
     // page AFTER the emit, so its UI pulls the latest payload on load.
     if let Ok(mut slot) = shared.toast.lock() {
@@ -199,7 +289,9 @@ fn ensure_toast(app: &AppHandle) {
             .background_color(tauri::utils::config::Color(20, 22, 32, 255))
             .build();
         if let Err(e) = built {
-            eprintln!("[dsh] create toast window failed: {e}");
+            diag(&app, &format!("toast: create window failed: {e}"));
+        } else {
+            diag(&app, "toast: window created (visible by default)");
         }
     });
 }
