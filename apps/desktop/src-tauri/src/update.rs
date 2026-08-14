@@ -394,13 +394,14 @@ fn auto_install(
             record_update(app, &info.current, &version, "ok", None);
             crate::listener::toast(
                 app,
+                shared,
                 "dsh 更新",
                 &format!("v{version} 已就绪，重启 dsh 后生效（菜单「重启 dsh」）。"),
             );
         }
         Err(e) => {
             record_update(app, &info.current, &info.latest, "failed", Some(e.clone()));
-            crate::listener::toast(app, "dsh 更新", &format!("自动更新失败：{e}"));
+            crate::listener::toast(app, shared, "dsh 更新", &format!("自动更新失败：{e}"));
         }
     }
     shared.install_busy.store(false, Ordering::SeqCst);

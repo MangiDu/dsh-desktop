@@ -86,6 +86,8 @@ pub struct Shared {
     pub install_busy: AtomicBool,
     /// Consecutive start failures in this run (>=3 enables 重置运行时).
     pub fail_streak: AtomicU32,
+    /// Latest toast payload (title, body) for the pull-on-load model.
+    pub toast: Mutex<Option<(String, String)>>,
 }
 
 impl Shared {

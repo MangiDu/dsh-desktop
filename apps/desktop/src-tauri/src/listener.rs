@@ -52,8 +52,13 @@ struct ToastPayload {
 /// Non-blocking, web-notification-style banner in the top-right corner:
 /// always-on-top but never steals focus, auto-hides after 6s, and focuses
 /// the main window only when the user clicks it.
-pub fn toast(app: &AppHandle, title: &str, body: &str) {
+pub fn toast(app: &AppHandle, shared: &Arc<crate::dsh::Shared>, title: &str, body: &str) {
     println!("[dsh] alert: {title} :: {body}");
+    // Store the payload first: a freshly created toast window loads the
+    // page AFTER the emit, so its UI pulls the latest payload on load.
+    if let Ok(mut slot) = shared.toast.lock() {
+        *slot = Some((title.to_string(), body.to_string()));
+    }
     ensure_toast(app);
     let seq = TOAST_SEQ.fetch_add(1, Ordering::SeqCst) + 1;
     let _ = app.emit_to(
@@ -128,6 +133,7 @@ pub fn handle_frame(app: &AppHandle, shared: &Arc<crate::dsh::Shared>, kind: &st
             badge(app, Some(1));
             toast(
                 app,
+                shared,
                 "dsh 请求权限",
                 &format!("dsh 想要执行「{tool}」{reason}，请在窗口中批准或拒绝。"),
             );
@@ -141,6 +147,7 @@ pub fn handle_frame(app: &AppHandle, shared: &Arc<crate::dsh::Shared>, kind: &st
             badge(app, Some(1));
             toast(
                 app,
+                shared,
                 "dsh 需要你的回答",
                 &format!("dsh 向你提出了 {n} 个问题，请在窗口中回答。"),
             );
@@ -151,7 +158,7 @@ pub fn handle_frame(app: &AppHandle, shared: &Arc<crate::dsh::Shared>, kind: &st
         "host/agent-error" => {
             let msg = extra.get("message").and_then(|v| v.as_str()).unwrap_or("未知错误");
             badge(app, Some(1));
-            toast(app, "dsh 会话出错", msg);
+            toast(app, shared, "dsh 会话出错", msg);
         }
         "stream/error" => {
             let msg = extra
@@ -159,7 +166,7 @@ pub fn handle_frame(app: &AppHandle, shared: &Arc<crate::dsh::Shared>, kind: &st
                 .and_then(|v| v.get("message"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("未知错误");
-            toast(app, "dsh 事件流错误", msg);
+            toast(app, shared, "dsh 事件流错误", msg);
         }
         _ => {}
     }

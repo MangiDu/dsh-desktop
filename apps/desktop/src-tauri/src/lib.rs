@@ -7,7 +7,7 @@ mod update;
 use std::sync::Arc;
 
 use dsh::Phase;
-use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
+use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
 use tauri_plugin_dialog::DialogExt;
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, RunEvent};
@@ -209,6 +209,13 @@ fn resolve_plugin_root(root: &std::path::Path) -> Result<std::path::PathBuf, Str
     }
 }
 
+/// The latest toast payload, consumed by the toast page on load (the
+/// emit can race ahead of a freshly created window's page load).
+#[tauri::command]
+fn toast_current(state: tauri::State<'_, AppState>) -> Option<(String, String)> {
+    state.0.toast.lock().ok()?.clone()
+}
+
 /// Toast banner click: focus the main window and dismiss the toast.
 #[tauri::command]
 fn toast_clicked(app: AppHandle) {
@@ -359,7 +366,8 @@ pub fn run() {
             dsh_plugin_offline,
             runtime_reset,
             dsh_home_info,
-            toast_clicked
+            toast_clicked,
+            toast_current
         ])
         .setup(|app| {
             let shared = app.state::<AppState>().0.clone();
@@ -395,7 +403,18 @@ pub fn run() {
                 let submenu = SubmenuBuilder::new(app, "dsh desktop")
                     .items(&[&check, &plugin, &restart, &settings, &logs, &quit])
                     .build()?;
-                let menu = MenuBuilder::new(app).items(&[&submenu]).build()?;
+                // Standard Edit menu: without it WKWebView never receives
+                // Cmd+C/V/X/A (paste/copy are broken in the dsh GUI).
+                let edit = SubmenuBuilder::new(app, "编辑")
+                    .item(&PredefinedMenuItem::undo(app, None)?)
+                    .item(&PredefinedMenuItem::redo(app, None)?)
+                    .separator()
+                    .item(&PredefinedMenuItem::cut(app, None)?)
+                    .item(&PredefinedMenuItem::copy(app, None)?)
+                    .item(&PredefinedMenuItem::paste(app, None)?)
+                    .item(&PredefinedMenuItem::select_all(app, None)?)
+                    .build()?;
+                let menu = MenuBuilder::new(app).items(&[&submenu, &edit]).build()?;
                 app.set_menu(menu)?;
                 app.on_menu_event(|app, event| menu_action(app, event.id().as_ref()));
             }
