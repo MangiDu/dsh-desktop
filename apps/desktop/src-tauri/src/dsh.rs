@@ -244,13 +244,27 @@ pub fn start(app: &AppHandle, shared: &Arc<Shared>) -> Result<(), String> {
     };
     let _ = log_line_string(&file, &shared.ring, format!("[dsh] node {node_version}, bin {bin:?}, log {log_path:?}"));
 
-    let mut cmd = Command::new("node");
-    cmd.arg(&bin).arg("web").arg("--port").arg("0");
-    if let Ok(cwd) = std::env::var("DSH_CWD") {
-        if !cwd.trim().is_empty() {
-            cmd.current_dir(&cwd);
+    // The dsh child's cwd partitions its session history (~/.dsh/sessions).
+    // Default to a dedicated, stable workspace so the desktop never opens
+    // sessions another dsh instance (e.g. a terminal one) is writing; a
+    // reading instance validating a live session log can otherwise report
+    // "corrupt session log: seq gap" — an artifact of concurrent access.
+    let cwd = match std::env::var("DSH_CWD") {
+        Ok(v) if !v.trim().is_empty() => std::path::PathBuf::from(v.trim()),
+        _ => {
+            let home = app
+                .path()
+                .home_dir()
+                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let dir = home.join("dsh-desktop-workspace");
+            let _ = std::fs::create_dir_all(&dir);
+            dir
         }
-    }
+    };
+
+    let mut cmd = Command::new("node");
+    cmd.arg(&bin).arg("web").arg("--port").arg("0").current_dir(&cwd);
+    println!("[dsh] child cwd: {}", cwd.display());
     cmd.env("DSH_DESKTOP_CHILD", "1")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
