@@ -58,7 +58,26 @@ pub mod sysnotify {
 
     static GRANTED: AtomicBool = AtomicBool::new(false);
 
+    /// UNUserNotificationCenter raises an uncaught NSException when the
+    /// process has no app bundle (bundleProxyForCurrentProcess is nil) —
+    /// i.e. for unbundled dev binaries. Only engage the system path inside
+    /// a real .app bundle; the toast banner covers everything else.
+    fn in_app_bundle() -> bool {
+        let Ok(exe) = std::env::current_exe() else {
+            return false;
+        };
+        let segs: Vec<String> = exe
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().to_string())
+            .collect();
+        segs.windows(2).any(|w| w[0] == "Contents" && w[1] == "MacOS")
+    }
+
     pub fn request_permission() {
+        if !in_app_bundle() {
+            println!("[dsh] unbundled dev binary: system notifications unavailable, using toast");
+            return;
+        }
         let center = UNUserNotificationCenter::currentNotificationCenter();
         let handler = RcBlock::new(move |granted: Bool, _err: *mut NSError| {
             GRANTED.store(granted.as_bool(), Ordering::SeqCst);
@@ -71,10 +90,13 @@ pub mod sysnotify {
     }
 
     pub fn granted() -> bool {
-        GRANTED.load(Ordering::SeqCst)
+        in_app_bundle() && GRANTED.load(Ordering::SeqCst)
     }
 
     pub fn send(title: &str, body: &str) {
+        if !in_app_bundle() {
+            return;
+        }
         let center = UNUserNotificationCenter::currentNotificationCenter();
         let content = UNMutableNotificationContent::new();
         content.setTitle(&NSString::from_str(title));
