@@ -25,9 +25,8 @@ body {
 
 #app {
   display: flex;
-  align-items: center;
-  justify-content: center;
   padding: 26px;
+  overflow-y: auto;
 }
 
 .panel {
@@ -35,6 +34,7 @@ body {
   flex-direction: column;
   align-items: center;
   gap: 14px;
+  margin: auto;
   padding: 30px 32px;
   max-width: 560px;
   width: 100%;
