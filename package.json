@@ -8,6 +8,7 @@
     "desktop:dev": "pnpm --filter @dsh-desktop/shell tauri dev",
     "desktop:build": "pnpm --filter @dsh-desktop/shell tauri build",
     "ui:dev": "pnpm --filter @dsh-desktop/shell dev",
-    "ui:build": "pnpm --filter @dsh-desktop/shell build"
+    "ui:build": "pnpm --filter @dsh-desktop/shell build",
+    "notify:refresh": "bash scripts/refresh-notifications.sh"
   }
 }
