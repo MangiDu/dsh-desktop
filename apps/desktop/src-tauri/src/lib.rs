@@ -124,6 +124,35 @@ fn open_shell_panel(app: &AppHandle, panel: &str) {
     dsh::ensure_splash(app);
 }
 
+/// Set the Dock icon at runtime: dev binaries carry no app bundle, so the
+/// icon otherwise stays the generic executable one until M5 packaging.
+#[cfg(target_os = "macos")]
+fn apply_dock_icon() {
+    use objc2::rc::Retained;
+    use objc2::AnyThread;
+    use objc2_app_kit::{NSApplication, NSImage};
+    use objc2_foundation::{MainThreadMarker, NSData};
+
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let ns_app = NSApplication::sharedApplication(mtm);
+    let bytes: &'static [u8] = include_bytes!("../icons/icon.png");
+    let data: Retained<NSData> = unsafe {
+        NSData::initWithBytes_length(
+            NSData::alloc(),
+            bytes.as_ptr().cast(),
+            bytes.len() as objc2_foundation::NSUInteger,
+        )
+    };
+    let Some(image) = NSImage::initWithData(NSImage::alloc(), &data) else {
+        return;
+    };
+    unsafe {
+        ns_app.setApplicationIconImage(Some(&image));
+    }
+}
+
 /// Show the dsh main window, or the shell window when there is none yet.
 fn show_main_or_splash(app: &AppHandle) {
     if let Some(w) = app.get_webview_window(dsh::MAIN_LABEL) {
@@ -175,6 +204,10 @@ pub fn run() {
             // Replace the default SIGTERM/SIGINT disposition so an external
             // kill still cleans up the dsh child.
             dsh::install_term_handler();
+
+            // Branded Dock icon even for the unbundled dev binary.
+            #[cfg(target_os = "macos")]
+            apply_dock_icon();
 
             // Persist default settings on first run.
             let settings = runtime::load_settings(app.handle());
