@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Shell UI window permissions. The main window loads the dsh web app over http and gets NO capability at all.",
+  "windows": ["splash"],
+  "permissions": ["core:default"]
+}

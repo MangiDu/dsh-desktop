@@ -1,0 +1,13 @@
+{
+  "name": "dsh-desktop",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Tauri desktop shell for dsh (@deepseek-ai/dsh)",
+  "packageManager": "pnpm@11.17.0",
+  "scripts": {
+    "desktop:dev": "pnpm --filter @dsh-desktop/shell tauri dev",
+    "desktop:build": "pnpm --filter @dsh-desktop/shell tauri build",
+    "ui:dev": "pnpm --filter @dsh-desktop/shell dev",
+    "ui:build": "pnpm --filter @dsh-desktop/shell build"
+  }
+}

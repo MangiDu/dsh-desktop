@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>dsh desktop</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <main class="panel" id="panel-splash">
+        <div class="spinner" aria-hidden="true"></div>
+        <h1>dsh desktop</h1>
+        <p class="hint" id="splash-hint">正在启动 dsh…</p>
+      </main>
+      <main class="panel hidden" id="panel-error">
+        <h1>dsh 未能启动</h1>
+        <p class="hint" id="error-hint"></p>
+        <pre id="error-log" class="log"></pre>
+        <div class="actions">
+          <button id="btn-retry" type="button">重试</button>
+          <button id="btn-quit" type="button">退出</button>
+        </div>
+      </main>
+      <main class="panel hidden" id="panel-failed">
+        <h1>dsh 已退出</h1>
+        <p class="hint" id="failed-hint"></p>
+        <pre id="failed-log" class="log"></pre>
+        <div class="actions">
+          <button id="btn-restart" type="button">重新启动</button>
+          <button id="btn-quit2" type="button">退出</button>
+        </div>
+      </main>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

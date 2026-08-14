@@ -1,0 +1,20 @@
+# Node
+node_modules/
+dist/
+
+# Rust
+apps/desktop/src-tauri/target/
+target/
+
+# Local tool caches (kept inside the workspace on purpose, not in VCS)
+.cargo-home/
+.pnpm-store/
+
+# dsh runtime state (M2+; app-data layout is on disk elsewhere)
+runtime/
+
+# OS
+.DS_Store
+
+# Logs
+*.log
