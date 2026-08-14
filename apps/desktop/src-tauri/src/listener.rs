@@ -15,14 +15,19 @@
 //! - `host/agent-error`  → agent error                    (badge + notification + focus)
 //! - `stream/error`      → stream failure                 (notification)
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
+#[cfg(not(target_os = "macos"))]
+use std::sync::atomic::AtomicU64;
 
 use futures_util::StreamExt;
+#[cfg(not(target_os = "macos"))]
 use serde::Serialize;
 use serde_json::Value;
-use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Manager};
+#[cfg(not(target_os = "macos"))]
+use tauri::{Emitter, WebviewUrl, WebviewWindowBuilder};
 
 pub const MUX_PATH: &str = "/api/events.mux";
 pub const HOST_PATH: &str = "/api/events.host";
@@ -41,15 +46,14 @@ struct Envelope {
 }
 
 /// macOS system notifications via UNUserNotificationCenter (the modern
-/// API — the top-right Notification Center banner, non-blocking). The
-/// system banner is the PRIMARY channel; the in-app toast banner is the
-/// permission-free fallback (denied / not determined / delivery error).
-/// Every decision is appended to `appdata/logs/notify.log` so notification
-/// failures are diagnosable without a debugger.
+/// API — the top-right Notification Center banner, non-blocking). On macOS
+/// this is the ONLY notification channel: the custom toast window is never
+/// shown (it exists only on other platforms). Every decision is appended to
+/// `appdata/logs/notify.log` so notification failures are diagnosable
+/// without a debugger.
 #[cfg(target_os = "macos")]
 pub mod sysnotify {
     use std::ptr::NonNull;
-    use std::sync::Arc;
 
     use block2::RcBlock;
     use objc2::runtime::Bool;
@@ -157,25 +161,15 @@ pub mod sysnotify {
         center.addNotificationRequest_withCompletionHandler(&request, Some(&on_error));
     }
 
-    /// System banner keyed off the LIVE authorization status — the system
-    /// notification (the top-right Notification Center banner) is the
-    /// PRIMARY channel; the custom toast is only the fallback:
-    /// authorized/provisional → system banner only (a delivery error falls
-    /// back to the toast);
-    /// notDetermined → re-request permission on the main thread (the
-    /// startup request may have run before the app was fully active, and
-    /// macOS silently answers granted=false off the main thread) plus a
-    /// toast fallback for this event;
-    /// denied/unknown → toast fallback only.
-    pub fn notify_system_or_toast(
-        app: &tauri::AppHandle,
-        shared: &Arc<crate::dsh::Shared>,
-        title: &str,
-        body: &str,
-        sticky: bool,
-    ) {
+    /// System banner keyed off the LIVE authorization status — on macOS the
+    /// system notification is the ONLY channel (no custom toast):
+    /// authorized/provisional → post the banner (delivery errors are logged);
+    /// notDetermined → re-request permission on the main thread (the startup
+    /// request may have run before the app was fully active, and macOS
+    /// silently answers granted=false off the main thread);
+    /// denied/unknown → skip and log (the Dock badge still shows).
+    pub fn notify_system(app: &tauri::AppHandle, title: &str, body: &str) {
         let app = app.clone();
-        let shared = shared.clone();
         let title = title.to_string();
         let body = body.to_string();
         with_status(move |status| {
@@ -186,15 +180,11 @@ pub mod sysnotify {
             match status {
                 2 | 3 => {
                     let app2 = app.clone();
-                    let shared2 = shared.clone();
-                    let t2 = title.clone();
-                    let b2 = body.clone();
                     let on_error = RcBlock::new(move |err: *mut NSError| {
                         let msg = unsafe { err.as_ref() }
                             .map(|e| e.localizedDescription().to_string())
                             .unwrap_or_default();
-                        super::diag(&app2, &format!("sysnotify: delivery error: {msg:?}, falling back to toast"));
-                        super::toast(&app2, &shared2, &t2, &b2, sticky);
+                        super::diag(&app2, &format!("sysnotify: delivery error: {msg:?}"));
                     });
                     // Posting is safe from this queue (verified live: the
                     // system banner displays); only the authorization
@@ -204,10 +194,9 @@ pub mod sysnotify {
                 0 => {
                     super::diag(&app, "sysnotify: notDetermined, re-requesting authorization");
                     request_permission(&app);
-                    super::toast(&app, &shared, &title, &body, sticky);
                 }
                 _ => {
-                    super::toast(&app, &shared, &title, &body, sticky);
+                    super::diag(&app, "sysnotify: not authorized, system notification skipped (Dock badge still set)");
                 }
             }
         });
@@ -215,14 +204,15 @@ pub mod sysnotify {
 }
 
 /// Event entry point: on macOS the system notification (the top-right
-/// Notification Center banner) is the primary channel, with the in-app toast
-/// as the permission-free fallback; on other platforms the toast is the only
+/// Notification Center banner) is the ONLY channel — the custom toast window
+/// is never shown there; on other platforms the in-app toast banner is the
 /// channel.
+#[cfg_attr(target_os = "macos", allow(unused_variables))]
 pub fn notify_event(app: &AppHandle, shared: &Arc<crate::dsh::Shared>, title: &str, body: &str, sticky: bool) {
     diag(app, &format!("notify: {title} :: {body}"));
     #[cfg(target_os = "macos")]
     {
-        sysnotify::notify_system_or_toast(app, shared, title, body, sticky);
+        sysnotify::notify_system(app, title, body);
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -252,20 +242,25 @@ pub fn diag(app: &AppHandle, msg: &str) {
 }
 
 pub const TOAST_LABEL: &str = "toast";
+#[cfg(not(target_os = "macos"))]
 static TOAST_SEQ: AtomicU64 = AtomicU64::new(0);
 
+#[cfg(not(target_os = "macos"))]
 #[derive(Clone, Serialize)]
 struct ToastPayload {
     title: String,
     body: String,
 }
 
-/// Non-blocking banner that anchors itself where the user is looking (the
-/// top-right corner of the dsh main window, or the primary monitor when
-/// there is no main window): always-on-top but never steals focus, focuses
-/// the main window only when clicked. `sticky` banners (approval, question,
-/// agent-error) stay until clicked or resolved instead of auto-hiding —
-/// a blocking request must not disappear after 6 seconds.
+/// In-app toast banner — the notification channel on non-macOS platforms
+/// only; the macOS build never shows it (system notifications are used
+/// there instead). Anchors to the top-right of the viewport the user is
+/// facing (the display holding the dsh main window): always-on-top but
+/// never steals focus, focuses the main window only when clicked. `sticky`
+/// banners (approval, question, agent-error) stay until clicked or resolved
+/// instead of auto-hiding — a blocking request must not disappear after
+/// 6 seconds.
+#[cfg(not(target_os = "macos"))]
 pub fn toast(app: &AppHandle, shared: &Arc<crate::dsh::Shared>, title: &str, body: &str, sticky: bool) {
     println!("[dsh] alert: {title} :: {body}");
     diag(app, &format!("toast: showing banner ({title})"));
@@ -309,6 +304,7 @@ pub fn toast(app: &AppHandle, shared: &Arc<crate::dsh::Shared>, title: &str, bod
     });
 }
 
+#[cfg(not(target_os = "macos"))]
 fn hide_toast(app: &AppHandle) {
     if let Some(w) = app.get_webview_window(TOAST_LABEL) {
         let _ = w.hide();
@@ -321,6 +317,7 @@ fn hide_toast(app: &AppHandle) {
 /// a screen the user is not looking at (seen in the wild: the banner landed
 /// at x=3176 while the main window sat at x=260). Falls back to the primary
 /// monitor, then to a safe default.
+#[cfg(not(target_os = "macos"))]
 fn toast_anchor(app: &AppHandle, tw: f64, _th: f64) -> (f64, f64) {
     let monitor = app
         .get_webview_window(crate::dsh::MAIN_LABEL)
@@ -344,6 +341,7 @@ fn toast_anchor(app: &AppHandle, tw: f64, _th: f64) -> (f64, f64) {
     (100.0, 100.0)
 }
 
+#[cfg(not(target_os = "macos"))]
 fn ensure_toast(app: &AppHandle) {
     if app.get_webview_window(TOAST_LABEL).is_some() {
         return;
@@ -416,6 +414,7 @@ pub fn handle_frame(app: &AppHandle, shared: &Arc<crate::dsh::Shared>, kind: &st
         }
         "approval/resolved" | "question/resolved" => {
             badge(app, None);
+            #[cfg(not(target_os = "macos"))]
             hide_toast(app);
         }
         "host/agent-error" => {
