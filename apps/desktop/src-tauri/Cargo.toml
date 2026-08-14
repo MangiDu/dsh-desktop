@@ -12,7 +12,10 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon", "image-png"] }
+# `devtools` enables WKWebView inspection in RELEASE builds (wry compiles
+# set_inspectable only under debug_assertions or this feature) — needed for
+# the page-side diagnostics of the second-click issue; harmless otherwise.
+tauri = { version = "2", features = ["tray-icon", "image-png", "devtools"] }
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
