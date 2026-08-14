@@ -284,7 +284,9 @@ fn apply_dock_icon() {
         return;
     };
     let ns_app = NSApplication::sharedApplication(mtm);
-    let bytes: &'static [u8] = include_bytes!("../icons/icon.png");
+    // The Dock uses the solid icon variant (icons/dock-icon.png); the app
+    // bundle's .icns (transparent variant) remains what Finder/Cmd+Tab show.
+    let bytes: &'static [u8] = include_bytes!("../icons/dock-icon.png");
     let data: Retained<NSData> = unsafe {
         NSData::initWithBytes_length(
             NSData::alloc(),
