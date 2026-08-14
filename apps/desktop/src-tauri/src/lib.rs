@@ -284,9 +284,9 @@ fn apply_dock_icon() {
         return;
     };
     let ns_app = NSApplication::sharedApplication(mtm);
-    // The Dock uses the solid icon variant (icons/dock-icon.png); the app
-    // bundle's .icns (transparent variant) remains what Finder/Cmd+Tab show.
-    let bytes: &'static [u8] = include_bytes!("../icons/dock-icon.png");
+    // Dock shows the 80%-transparent app icon (same visual as the bundle
+    // .icns); the menu bar tray uses the solid variant (tray-icon-32.png).
+    let bytes: &'static [u8] = include_bytes!("../icons/app-icon.png");
     let data: Retained<NSData> = unsafe {
         NSData::initWithBytes_length(
             NSData::alloc(),
@@ -442,7 +442,7 @@ pub fn run() {
                     .build()?;
                 let tray = TrayIconBuilder::with_id("main-tray")
                     .icon(tauri::image::Image::from_bytes(include_bytes!(
-                        "../icons/32x32.png"
+                        "../icons/tray-icon-32.png"
                     ))?)
                     .tooltip("dsh desktop")
                     .menu(&tray_menu)
