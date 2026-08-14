@@ -456,12 +456,6 @@ fn on_ready(app: &AppHandle, shared: &Arc<Shared>, id: u64, port: u16) {
             .inner_size(1280.0, 800.0)
             .min_inner_size(800.0, 600.0)
             .center()
-            // Same look as the shell window: no native title strip, content
-            // full-bleed to the top edge, close/minimize/zoom traffic lights
-            // floating over the web content (the CloseRequested confirmation
-            // above keeps working — it is window-level, not title-bar-level).
-            .title_bar_style(tauri::TitleBarStyle::Overlay)
-            .hidden_title(true)
             .build()
         {
             Ok(window) => {
