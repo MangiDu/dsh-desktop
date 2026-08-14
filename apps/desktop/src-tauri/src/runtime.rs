@@ -273,6 +273,32 @@ pub struct VersionInfo {
     pub mtime: u64,
 }
 
+/// Crash-recovery: remove every installed version and the current pointer
+/// so the next start falls through to a fresh bootstrap.
+pub fn reset_all(app: &AppHandle) -> Result<(), String> {
+    let runtime = runtime_dir(app)?;
+    let versions = runtime.join(VERSIONS_DIR);
+    if versions.is_dir() {
+        for entry in std::fs::read_dir(&versions)
+            .map_err(|e| format!("读取版本目录失败: {e}"))?
+            .flatten()
+        {
+            if entry.path().is_dir() {
+                std::fs::remove_dir_all(entry.path())
+                    .map_err(|e| format!("删除版本目录失败: {e}"))?;
+            }
+        }
+    }
+    let current = runtime.join(CURRENT_FILE);
+    let _ = std::fs::remove_file(current);
+    // Reset rollback/check state so the fresh install starts clean.
+    let mut settings = load_settings(app);
+    settings.last_known_good = None;
+    settings.last_check = None;
+    let _ = save_settings(app, &settings);
+    Ok(())
+}
+
 /// Resolution outcome for the dsh bin used to launch the child.
 #[derive(Debug)]
 pub enum Resolve {

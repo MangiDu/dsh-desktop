@@ -12,7 +12,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -55,8 +55,8 @@ pub enum Phase {
     Starting,
     Bootstrapping { line: String },
     Ready { url: String },
-    StartFailed { reason: String, log_tail: String },
-    Exited { code: Option<i32>, log_tail: String },
+    StartFailed { reason: String, log_tail: String, can_reset: bool },
+    Exited { code: Option<i32>, log_tail: String, can_reset: bool },
 }
 
 impl Default for Phase {
@@ -84,6 +84,8 @@ pub struct Shared {
     pub ui_intent: Mutex<Option<String>>,
     /// A runtime install/update is in progress (scheduler mutex).
     pub install_busy: AtomicBool,
+    /// Consecutive start failures in this run (>=3 enables 重置运行时).
+    pub fail_streak: AtomicU32,
 }
 
 impl Shared {
@@ -409,6 +411,8 @@ fn on_ready(app: &AppHandle, shared: &Arc<Shared>, id: u64, port: u16) {
     *shared.phase.lock().unwrap() = Phase::Ready { url: url.clone() };
     println!("[dsh] ready: {url}");
 
+    shared.fail_streak.store(0, Ordering::SeqCst);
+
     // A managed runtime that reached ready is the new last-known-good;
     // prune version dirs beyond current + lkg + two newest.
     if let Some(version) = crate::runtime::current_version(app) {
@@ -568,10 +572,16 @@ fn on_exit(app: &AppHandle, shared: &Arc<Shared>, id: u64, code: Option<i32>) {
         }
         *g = None;
     }
-    println!("[dsh] exited: code={code:?}");
+    let streak = if was_starting {
+        shared.fail_streak.fetch_add(1, Ordering::SeqCst) + 1
+    } else {
+        shared.fail_streak.load(Ordering::SeqCst)
+    };
+    println!("[dsh] exited: code={code:?} (streak {streak})");
     let phase = Phase::Exited {
         code,
         log_tail: shared.log_tail(),
+        can_reset: streak >= 3,
     };
     *shared.phase.lock().unwrap() = phase.clone();
     close_main(app);
@@ -631,10 +641,12 @@ pub fn bootstrap_now(app: &AppHandle, shared: &Arc<Shared>) -> Result<(), String
 }
 
 fn fail_start(app: &AppHandle, shared: &Arc<Shared>, reason: String) {
-    eprintln!("[dsh] start failed: {reason}");
+    let streak = shared.fail_streak.fetch_add(1, Ordering::SeqCst) + 1;
+    eprintln!("[dsh] start failed (streak {streak}): {reason}");
     let phase = Phase::StartFailed {
         reason: reason.clone(),
         log_tail: shared.log_tail(),
+        can_reset: streak >= 3,
     };
     *shared.phase.lock().unwrap() = phase.clone();
     let app2 = app.clone();

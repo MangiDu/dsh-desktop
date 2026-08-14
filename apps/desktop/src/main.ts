@@ -12,8 +12,8 @@ type DshState =
   | { phase: "starting" }
   | { phase: "bootstrapping"; line: string }
   | { phase: "ready"; url: string; version?: string }
-  | { phase: "start-failed"; reason: string; logTail: string }
-  | { phase: "exited"; code: number | null; logTail: string };
+  | { phase: "start-failed"; reason: string; logTail: string; canReset: boolean }
+  | { phase: "exited"; code: number | null; logTail: string; canReset: boolean };
 
 const $ = <T extends HTMLElement>(id: string): T => {
   const el = document.getElementById(id);
@@ -69,11 +69,13 @@ async function onState(state: DshState) {
     case "start-failed":
       $("error-hint").textContent = state.reason;
       $("error-log").textContent = logTailOf(state.logTail);
+      $("btn-reset-runtime").classList.toggle("hidden", !state.canReset);
       show("error");
       break;
     case "exited":
       $("failed-hint").textContent = `dsh 进程已退出（code=${state.code ?? "?"}）`;
       $("failed-log").textContent = logTailOf(state.logTail);
+      $("btn-reset-runtime2").classList.toggle("hidden", !state.canReset);
       show("failed");
       break;
   }
@@ -88,6 +90,22 @@ $("btn-restart").addEventListener("click", async () => {
   show("splash");
   await invoke("dsh_restart");
 });
+
+// Crash recovery: wipe the managed runtime and re-bootstrap.
+const resetRuntime = async () => {
+  const ok = window.confirm(
+    "将删除已安装的 dsh 运行时并重新下载安装（约 1 分钟），确定继续？",
+  );
+  if (!ok) return;
+  show("splash");
+  try {
+    await invoke("runtime_reset");
+  } catch (err) {
+    console.error("[shell] runtime_reset failed:", err);
+  }
+};
+$("btn-reset-runtime").addEventListener("click", () => void resetRuntime());
+$("btn-reset-runtime2").addEventListener("click", () => void resetRuntime());
 
 for (const id of ["btn-quit", "btn-quit2"]) {
   $(id).addEventListener("click", async () => {

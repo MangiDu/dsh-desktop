@@ -214,6 +214,20 @@ fn ui_intent(state: tauri::State<'_, AppState>) -> Option<String> {
     state.0.ui_intent.lock().ok()?.take()
 }
 
+/// Crash recovery: wipe the managed runtime and re-bootstrap.
+#[tauri::command]
+async fn runtime_reset(app: AppHandle, state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let shared = state.0.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::runtime::reset_all(&app)?;
+        shared.fail_streak.store(0, std::sync::atomic::Ordering::SeqCst);
+        let _ = crate::dsh::bootstrap_now(&app, &shared);
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("重置任务执行失败: {e}"))?
+}
+
 /// Open the shell window on a specific panel ("plugin" | "update").
 fn open_shell_panel(app: &AppHandle, panel: &str) {
     println!("[dsh] open_shell_panel: {panel}");
@@ -273,6 +287,14 @@ fn menu_action(app: &AppHandle, id: &str) {
         "menu-check-update" => open_shell_panel(app, "update"),
         "menu-install-plugin" => open_shell_panel(app, "plugin"),
         "menu-settings" => open_shell_panel(app, "settings"),
+        "menu-open-logs" => {
+            use tauri_plugin_opener::OpenerExt;
+            if let Ok(data) = app.path().app_data_dir() {
+                let logs = data.join("logs");
+                let _ = std::fs::create_dir_all(&logs);
+                let _ = app.opener().open_path(logs.to_string_lossy().to_string(), None::<&str>);
+            }
+        }
         "menu-restart-dsh" => {
             let shared = app.state::<AppState>().0.clone();
             let _ = dsh::start(app, &shared);
@@ -287,6 +309,13 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            // A second launch: focus the existing window instead of
+            // starting a duplicate app + dsh child.
+            println!("[dsh] single-instance: second launch detected, focusing");
+            show_main_or_splash(app);
+        }))
         .manage(AppState(Arc::new(dsh::Shared::default())))
         .invoke_handler(tauri::generate_handler![
             dsh_status,
@@ -303,7 +332,8 @@ pub fn run() {
             update::update_switch,
             update::update_history_list,
             close_choice,
-            dsh_plugin_offline
+            dsh_plugin_offline,
+            runtime_reset
         ])
         .setup(|app| {
             let shared = app.state::<AppState>().0.clone();
@@ -331,11 +361,13 @@ pub fn run() {
                 let settings = MenuItemBuilder::with_id("menu-settings", "设置…")
                     .accelerator("CmdOrCtrl+,")
                     .build(app)?;
+                let logs = MenuItemBuilder::with_id("menu-open-logs", "打开日志目录…")
+                    .build(app)?;
                 let quit = MenuItemBuilder::with_id("menu-quit", "退出 dsh desktop")
                     .accelerator("CmdOrCtrl+Q")
                     .build(app)?;
                 let submenu = SubmenuBuilder::new(app, "dsh desktop")
-                    .items(&[&check, &plugin, &restart, &settings, &quit])
+                    .items(&[&check, &plugin, &restart, &settings, &logs, &quit])
                     .build()?;
                 let menu = MenuBuilder::new(app).items(&[&submenu]).build()?;
                 app.set_menu(menu)?;
@@ -351,9 +383,10 @@ pub fn run() {
                 let check = MenuItemBuilder::with_id("menu-check-update", "检查更新…").build(app)?;
                 let plugin = MenuItemBuilder::with_id("menu-install-plugin", "安装插件…").build(app)?;
                 let settings_item = MenuItemBuilder::with_id("menu-settings", "设置…").build(app)?;
+                let logs_item = MenuItemBuilder::with_id("menu-open-logs", "打开日志目录…").build(app)?;
                 let quit = MenuItemBuilder::with_id("menu-quit", "退出 dsh desktop").build(app)?;
                 let tray_menu = MenuBuilder::new(app)
-                    .items(&[&show, &check, &plugin, &settings_item, &quit])
+                    .items(&[&show, &check, &plugin, &settings_item, &logs_item, &quit])
                     .build()?;
                 let tray = TrayIconBuilder::with_id("main-tray")
                     .icon(tauri::image::Image::from_bytes(include_bytes!(
