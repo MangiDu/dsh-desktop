@@ -74,12 +74,27 @@ const CLICK_LOG_SCRIPT: &str = r##"
         "prev=" + (e.defaultPrevented ? "1" : "0"));
     } catch (err) {}
   }
-  ["mousedown", "mouseup", "click", "dblclick", "pointerdown", "pointerup", "pointercancel", "contextmenu"].forEach(function (k) {
-    document.addEventListener(k, function (e) {
-      if (k === "mousedown") window.__dshDownTarget = e.target;
-      log(k, e);
-    }, true);
+  window.__dshScrolled = 0;
+  document.addEventListener("scroll", function () { window.__dshScrolled++; }, true);
+  ["mousedown", "click", "dblclick", "pointerdown", "pointercancel", "contextmenu"].forEach(function (k) {
+    document.addEventListener(k, function (e) { log(k, e); }, true);
   });
+  document.addEventListener("mousedown", function (e) {
+    window.__dshDownNode = e.target;
+    window.__dshDownTarget = e.target;
+    window.__dshScrolled = 0;
+    log("mousedown", e);
+  }, true);
+  document.addEventListener("pointerup", function (e) { log("pointerup", e); }, true);
+  document.addEventListener("mouseup", function (e) {
+    log("mouseup", e);
+    try {
+      console.log("[dsh-shell-click]", "same-node",
+        "same=" + (e.target === window.__dshDownNode ? "1" : "0"),
+        "connected=" + (window.__dshDownNode && window.__dshDownNode.isConnected ? "1" : "0"),
+        "scrolled=" + window.__dshScrolled);
+    } catch (err) {}
+  }, true);
 })();
 "##;
 
