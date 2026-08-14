@@ -97,8 +97,12 @@
         <h1>安装 dsh 插件</h1>
         <p class="hint">执行 <code>dsh plugin --profile web add &lt;包名&gt;</code>（需要 pnpm）</p>
         <div class="row">
-          <input id="plugin-pkg" type="text" placeholder="例如 @scope/pkg" spellcheck="false" />
+          <input id="plugin-pkg" type="text" placeholder="例如 @scope/pkg（在线安装）" spellcheck="false" />
           <button id="btn-plugin-add" class="primary" type="button">安装</button>
+        </div>
+        <div class="actions">
+          <button id="btn-plugin-offline-zip" type="button">离线安装（zip）</button>
+          <button id="btn-plugin-offline-dir" type="button">离线安装（目录）</button>
         </div>
         <pre id="plugin-log" class="log placeholder-text hidden">执行后日志将在此显示</pre>
       </main>

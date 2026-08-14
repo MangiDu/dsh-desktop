@@ -118,6 +118,18 @@ $("btn-plugin-add").addEventListener("click", async () => {
   }
 });
 
+const offlineInstall = async (kind: "zip" | "dir") => {
+  $("plugin-log").classList.remove("hidden");
+  appendLog($("plugin-log"), kind === "zip" ? "请选择插件 zip 包…" : "请选择插件目录…");
+  try {
+    await invoke("dsh_plugin_offline", { kind });
+  } catch (err) {
+    appendLog($("plugin-log"), `错误：${err}`);
+  }
+};
+$("btn-plugin-offline-zip").addEventListener("click", () => void offlineInstall("zip"));
+$("btn-plugin-offline-dir").addEventListener("click", () => void offlineInstall("dir"));
+
 listen<string>("dsh://plugin-log", (event) => {
   appendLog($("plugin-log"), event.payload);
 });

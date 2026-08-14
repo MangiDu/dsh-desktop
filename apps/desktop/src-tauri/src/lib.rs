@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use dsh::Phase;
 use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
+use tauri_plugin_dialog::DialogExt;
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, RunEvent};
 
@@ -64,11 +65,10 @@ fn runtime_bootstrap(app: AppHandle, state: tauri::State<'_, AppState>) -> Resul
     dsh::bootstrap_now(&app, &state.0)
 }
 
-/// Run `dsh plugin --profile web <args…>` (e.g. ["add", "pkg"]) for the
-/// managed runtime, streaming output lines to the shell UI.
-#[tauri::command]
-fn dsh_plugin(app: AppHandle, args: Vec<String>) -> Result<(), String> {
-    let bin = match runtime::resolve_active_bin(&app) {
+/// Spawn `dsh plugin --profile web <args…>` and stream output to the shell
+/// UI (`dsh://plugin-log` lines, `dsh://plugin-done` exit code).
+fn run_plugin_args(app: &AppHandle, args: Vec<String>) -> Result<(), String> {
+    let bin = match runtime::resolve_active_bin(app) {
         runtime::Resolve::Ready(b) => b,
         runtime::Resolve::NeedBootstrap => {
             return Err("dsh 运行时尚未安装，请先启动一次应用完成初始化".to_string())
@@ -103,11 +103,96 @@ fn dsh_plugin(app: AppHandle, args: Vec<String>) -> Result<(), String> {
             }
         });
     }
+    let app_done = app.clone();
     std::thread::spawn(move || {
         let code = child.wait().map(|s| s.code().unwrap_or(-1)).unwrap_or(-1);
-        let _ = app.emit("dsh://plugin-done", code);
+        let _ = app_done.emit("dsh://plugin-done", code);
     });
     Ok(())
+}
+
+/// Online install from a registry package name.
+#[tauri::command]
+fn dsh_plugin(app: AppHandle, args: Vec<String>) -> Result<(), String> {
+    run_plugin_args(&app, args)
+}
+
+/// Offline install: pick a zip (extracted to the app data dir) or a plugin
+/// directory, then `dsh plugin --profile web add <local path> --offline`.
+/// Local-path specs are a first-class `dsh plugin` input (pnpm link:); the
+/// reconcile step still wires the package into dsh.profile.bundles.
+#[tauri::command]
+fn dsh_plugin_offline(app: AppHandle, kind: String) -> Result<(), String> {
+    let target = match kind.as_str() {
+        "zip" => {
+            let Some(file) = app
+                .dialog()
+                .file()
+                .add_filter("插件 zip 包", &["zip"])
+                .blocking_pick_file()
+            else {
+                return Ok(()); // cancelled
+            };
+            let zip_path = file
+                .into_path()
+                .map_err(|e| format!("读取所选文件路径失败: {e}"))?;
+            let base = app
+                .path()
+                .app_data_dir()
+                .map_err(|e| format!("无法解析应用数据目录: {e}"))?
+                .join("offline-plugins");
+            let secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let out = base.join(format!("pkg-{secs}"));
+            std::fs::create_dir_all(&out).map_err(|e| format!("创建解压目录失败: {e}"))?;
+            let file_handle =
+                std::fs::File::open(&zip_path).map_err(|e| format!("打开 zip 失败: {e}"))?;
+            let mut archive =
+                zip::ZipArchive::new(file_handle).map_err(|e| format!("不是有效的 zip: {e}"))?;
+            archive.extract(&out).map_err(|e| format!("解压失败: {e}"))?;
+            let _ = app.emit("dsh://plugin-log", format!("已解压: {}", out.display()));
+            resolve_plugin_root(&out)?
+        }
+        "dir" => {
+            let Some(folder) = app.dialog().file().blocking_pick_folder() else {
+                return Ok(()); // cancelled
+            };
+            let path = folder
+                .into_path()
+                .map_err(|e| format!("读取所选目录路径失败: {e}"))?;
+            resolve_plugin_root(&path)?
+        }
+        _ => return Err("未知的离线安装类型".to_string()),
+    };
+    let target_str = target.to_string_lossy().to_string();
+    let _ = app.emit(
+        "dsh://plugin-log",
+        format!("离线安装: dsh plugin --profile web add {target_str} --offline"),
+    );
+    run_plugin_args(&app, vec!["add".to_string(), target_str, "--offline".to_string()])
+}
+
+/// The folder that contains the plugin's package.json — the picked/extracted
+/// root itself, or its single subdirectory (common zip layout).
+fn resolve_plugin_root(root: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    if root.join("package.json").is_file() {
+        return Ok(root.to_path_buf());
+    }
+    let entries: Vec<_> = std::fs::read_dir(root)
+        .map_err(|e| format!("读取目录失败: {e}"))?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .collect();
+    let with_manifest: Vec<_> = entries
+        .iter()
+        .filter(|p| p.is_dir() && p.join("package.json").is_file())
+        .collect();
+    match with_manifest.as_slice() {
+        [one] => Ok(one.to_path_buf()),
+        _ => Err("未在所选目录（或其唯一子目录）中找到 package.json，请选择插件包根目录".to_string()),
+    }
 }
 
 /// The panel the shell UI should show on load, consumed once.
@@ -196,7 +281,8 @@ pub fn run() {
             ui_intent,
             update::update_check,
             update::update_apply,
-            close_choice
+            close_choice,
+            dsh_plugin_offline
         ])
         .setup(|app| {
             let shared = app.state::<AppState>().0.clone();
