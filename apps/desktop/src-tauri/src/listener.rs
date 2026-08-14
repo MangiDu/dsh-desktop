@@ -22,6 +22,7 @@ use std::time::Duration;
 use futures_util::StreamExt;
 use serde_json::Value;
 use tauri::{AppHandle, Manager};
+use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 use tauri_plugin_notification::NotificationExt;
 
 pub const MUX_PATH: &str = "/api/events.mux";
@@ -51,6 +52,28 @@ fn badge(app: &AppHandle, count: Option<i64>) {
     }
 }
 
+/// Modal popup for critical events demanding immediate user action.
+/// Native notifications are silently dropped for unbundled dev binaries
+/// (macOS NSUserNotification without an app bundle), so critical events
+/// go through a native dialog instead — guaranteed visible everywhere.
+static ALERT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn alert(app: &AppHandle, title: &str, body: &str) {
+    println!("[dsh] alert: {title} :: {body}");
+    let app = app.clone();
+    let title = title.to_string();
+    let body = body.to_string();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = ALERT_LOCK.lock();
+        let _ = app
+            .dialog()
+            .message(body)
+            .title(title)
+            .kind(MessageDialogKind::Warning)
+            .blocking_show();
+    });
+}
+
 fn focus_main(app: &AppHandle) {
     if let Some(w) = app.get_webview_window(crate::dsh::MAIN_LABEL) {
         let _ = w.show();
@@ -74,7 +97,7 @@ pub fn handle_frame(app: &AppHandle, shared: &Arc<crate::dsh::Shared>, kind: &st
                 .unwrap_or_default();
             badge(app, Some(1));
             focus_main(app);
-            notify(
+            alert(
                 app,
                 "dsh 请求权限",
                 &format!("dsh 想要执行「{tool}」{reason}，请在窗口中批准或拒绝。"),
@@ -88,7 +111,7 @@ pub fn handle_frame(app: &AppHandle, shared: &Arc<crate::dsh::Shared>, kind: &st
                 .unwrap_or(1);
             badge(app, Some(1));
             focus_main(app);
-            notify(
+            alert(
                 app,
                 "dsh 需要你的回答",
                 &format!("dsh 向你提出了 {n} 个问题，请在窗口中回答。"),
