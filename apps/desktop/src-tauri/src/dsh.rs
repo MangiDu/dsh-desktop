@@ -183,8 +183,9 @@ pub fn ensure_splash(app: &AppHandle) {
     if let Err(e) = app.clone().run_on_main_thread(move || {
         let built = WebviewWindowBuilder::new(&app, SPLASH_LABEL, WebviewUrl::App("index.html".into()))
             .title("dsh desktop")
-            .inner_size(460.0, 360.0)
-            .resizable(false)
+            .inner_size(520.0, 440.0)
+            .min_inner_size(420.0, 380.0)
+            .resizable(true)
             .center()
             .build();
         if let Err(e) = built {
