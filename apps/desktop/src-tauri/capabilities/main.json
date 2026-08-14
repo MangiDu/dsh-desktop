@@ -1,0 +1,17 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main-notification",
+  "description": "The dsh GUI may call the notification plugin when it detects the desktop shell; grant it only that command set, scoped to loopback http origins (the dsh child serves on a random 127.0.0.1 port).",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "notification:default"
+  ],
+  "remote": {
+    "urls": [
+      "http://127.0.0.1:*",
+      "http://localhost:*"
+    ]
+  }
+}

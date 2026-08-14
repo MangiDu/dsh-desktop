@@ -69,15 +69,17 @@ const CLICK_LOG_SCRIPT: &str = r##"
       console.log("[dsh-shell-click]", kind,
         "target=" + desc(e.target),
         "down=" + desc(window.__dshDownTarget),
-        "x=" + e.clientX, "y=" + e.clientY, "detail=" + e.detail);
+        "detail=" + e.detail,
+        "x=" + e.clientX, "y=" + e.clientY,
+        "prev=" + (e.defaultPrevented ? "1" : "0"));
     } catch (err) {}
   }
-  document.addEventListener("mousedown", function (e) {
-    window.__dshDownTarget = e.target;
-    log("mousedown", e);
-  }, true);
-  document.addEventListener("mouseup", function (e) { log("mouseup", e); }, true);
-  document.addEventListener("click", function (e) { log("click", e); }, true);
+  ["mousedown", "mouseup", "click", "dblclick", "pointerdown", "pointerup", "pointercancel", "contextmenu"].forEach(function (k) {
+    document.addEventListener(k, function (e) {
+      if (k === "mousedown") window.__dshDownTarget = e.target;
+      log(k, e);
+    }, true);
+  });
 })();
 "##;
 
