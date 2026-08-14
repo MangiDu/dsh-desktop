@@ -210,6 +210,7 @@ pub fn ensure_splash(app: &AppHandle) {
             .min_inner_size(420.0, 380.0)
             .resizable(true)
             .center()
+            .accept_first_mouse(true)
             .background_color(tauri::utils::config::Color(16, 17, 26, 255))
             .build()
         {
@@ -456,6 +457,9 @@ fn on_ready(app: &AppHandle, shared: &Arc<Shared>, id: u64, port: u16) {
             .inner_size(1280.0, 800.0)
             .min_inner_size(800.0, 600.0)
             .center()
+            // First click delivers immediately even when the window is not
+            // key (browser-like); without this the first click only focuses.
+            .accept_first_mouse(true)
             .build()
         {
             Ok(window) => {

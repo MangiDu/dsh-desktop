@@ -302,6 +302,44 @@ fn apply_dock_icon() {
     }
 }
 
+/// macOS click-through: when a window is not key (the app was just activated,
+/// another panel had focus, a system notification was clicked…), NSWindow's
+/// `acceptsFirstMouse:` gate swallows the FIRST mouse-down to merely activate
+/// the window — the web GUI then feels like it needs a second click, while a
+/// browser (whose windows override the same method to YES) reacts on the
+/// first. Override it process-wide, mirroring Chromium.
+#[cfg(target_os = "macos")]
+fn enable_first_mouse_click_through() {
+    use objc2::ffi::{class_getInstanceMethod, method_setImplementation, objc_getClass};
+    use objc2::runtime::{AnyObject, Bool, Imp, Sel};
+
+    unsafe extern "C" fn accepts_first_mouse_impl(
+        _this: *mut AnyObject,
+        _sel: Sel,
+        _event: *mut AnyObject,
+    ) -> Bool {
+        Bool::YES
+    }
+
+    unsafe {
+        let cls = objc_getClass(c"NSWindow".as_ptr());
+        if cls.is_null() {
+            return;
+        }
+        let method = class_getInstanceMethod(cls, Sel::register(c"acceptsFirstMouse:"));
+        if method.is_null() {
+            return;
+        }
+        // fn-pointer types differ only in ABI unwind details; transmute is
+        // the standard bridge into objc2's `Imp` (plain `as` is rejected).
+        let imp: Imp = std::mem::transmute::<
+            unsafe extern "C" fn(*mut AnyObject, Sel, *mut AnyObject) -> Bool,
+            Imp,
+        >(accepts_first_mouse_impl);
+        method_setImplementation(method, imp);
+    }
+}
+
 /// Show the dsh main window, or the shell window when there is none yet.
 fn show_main_or_splash(app: &AppHandle) {
     if let Some(w) = app.get_webview_window(dsh::MAIN_LABEL) {
@@ -381,6 +419,11 @@ pub fn run() {
             // Branded Dock icon even for the unbundled dev binary.
             #[cfg(target_os = "macos")]
             apply_dock_icon();
+
+            // Deliver the first click into a non-key window instead of
+            // swallowing it to merely activate it (browser-like behaviour).
+            #[cfg(target_os = "macos")]
+            enable_first_mouse_click_through();
 
             // System notification permission (macOS prompts once; the toast
             // banner stays as the fallback until/unless granted).
