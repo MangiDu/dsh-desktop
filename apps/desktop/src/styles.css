@@ -87,6 +87,15 @@ h1 {
   gap: 10px;
 }
 
+.placeholder-text {
+  color: #55555f;
+  font-style: italic;
+}
+
+.hidden {
+  display: none !important;
+}
+
 .row {
   display: flex;
   gap: 8px;

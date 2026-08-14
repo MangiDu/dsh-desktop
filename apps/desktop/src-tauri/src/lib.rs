@@ -7,10 +7,11 @@ use std::sync::Arc;
 
 use dsh::Phase;
 use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
+use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, RunEvent};
 
 /// Managed state: everything the watcher threads and commands share.
-struct AppState(Arc<dsh::Shared>);
+pub(crate) struct AppState(pub(crate) Arc<dsh::Shared>);
 
 #[tauri::command]
 fn dsh_status(_app: AppHandle, state: tauri::State<'_, AppState>) -> Phase {
@@ -94,11 +95,38 @@ fn ui_intent(state: tauri::State<'_, AppState>) -> Option<String> {
     state.0.ui_intent.lock().ok()?.take()
 }
 
-fn open_plugin_panel(app: &AppHandle) {
+/// Open the shell window on a specific panel ("plugin" | "update").
+fn open_shell_panel(app: &AppHandle, panel: &str) {
     if let Ok(mut intent) = app.state::<AppState>().0.ui_intent.lock() {
-        *intent = Some("plugin".to_string());
+        *intent = Some(panel.to_string());
     }
     dsh::ensure_splash(app);
+}
+
+/// Show the dsh main window, or the shell window when there is none yet.
+fn show_main_or_splash(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window(dsh::MAIN_LABEL) {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+    } else {
+        dsh::ensure_splash(app);
+    }
+}
+
+/// Shared handler for the app menu and the tray menu.
+fn menu_action(app: &AppHandle, id: &str) {
+    match id {
+        "menu-check-update" => open_shell_panel(app, "update"),
+        "menu-install-plugin" => open_shell_panel(app, "plugin"),
+        "menu-restart-dsh" => {
+            let shared = app.state::<AppState>().0.clone();
+            let _ = dsh::start(app, &shared);
+        }
+        "menu-tray-show" => show_main_or_splash(app),
+        "menu-quit" => app.exit(0),
+        _ => {}
+    }
 }
 
 pub fn run() {
@@ -114,7 +142,9 @@ pub fn run() {
             settings_set,
             runtime_bootstrap,
             dsh_plugin,
-            ui_intent
+            ui_intent,
+            update::update_check,
+            update::update_apply
         ])
         .setup(|app| {
             let shared = app.state::<AppState>().0.clone();
@@ -143,19 +173,32 @@ pub fn run() {
                     .build()?;
                 let menu = MenuBuilder::new(app).items(&[&submenu]).build()?;
                 app.set_menu(menu)?;
-                app.on_menu_event(|app, event| match event.id().as_ref() {
-                    "menu-check-update" => {
-                        let shared = app.state::<AppState>().0.clone();
-                        update::check_and_update(app, &shared);
-                    }
-                    "menu-install-plugin" => open_plugin_panel(app),
-                    "menu-restart-dsh" => {
-                        let shared = app.state::<AppState>().0.clone();
-                        let _ = dsh::start(app, &shared);
-                    }
-                    "menu-quit" => app.exit(0),
-                    _ => {}
-                });
+                app.on_menu_event(|app, event| menu_action(app, event.id().as_ref()));
+            }
+
+            // Tray icon (menu bar): the background-mode anchor. Without an
+            // app bundle the dev binary has no branded Dock icon, so the
+            // tray is the reliable way back from 后台运行 in both dev and
+            // packaged runs.
+            {
+                let show = MenuItemBuilder::with_id("menu-tray-show", "显示窗口").build(app)?;
+                let check = MenuItemBuilder::with_id("menu-check-update", "检查更新…").build(app)?;
+                let plugin = MenuItemBuilder::with_id("menu-install-plugin", "安装插件…").build(app)?;
+                let quit = MenuItemBuilder::with_id("menu-quit", "退出 dsh desktop").build(app)?;
+                let tray_menu = MenuBuilder::new(app)
+                    .items(&[&show, &check, &plugin, &quit])
+                    .build()?;
+                let tray = TrayIconBuilder::with_id("main-tray")
+                    .icon(tauri::image::Image::from_bytes(include_bytes!(
+                        "../icons/32x32.png"
+                    ))?)
+                    .tooltip("dsh desktop")
+                    .menu(&tray_menu)
+                    .show_menu_on_left_click(true)
+                    .on_menu_event(|app, event| menu_action(app, event.id().as_ref()))
+                    .build(app)?;
+                // Keep the tray alive for the whole app lifetime.
+                app.manage(tray);
             }
 
             // Reap a dsh child orphaned by a previous run (e.g. SIGKILLed app).
@@ -195,15 +238,7 @@ pub fn run() {
             }
             // Dock icon click while backgrounded: restore the main window.
             #[cfg(target_os = "macos")]
-            RunEvent::Reopen { .. } => {
-                if let Some(w) = app.get_webview_window(dsh::MAIN_LABEL) {
-                    let _ = w.show();
-                    let _ = w.unminimize();
-                    let _ = w.set_focus();
-                } else {
-                    dsh::ensure_splash(app);
-                }
-            }
+            RunEvent::Reopen { .. } => show_main_or_splash(app),
             _ => {}
         });
 }

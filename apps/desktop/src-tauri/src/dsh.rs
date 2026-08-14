@@ -410,7 +410,7 @@ fn on_ready(app: &AppHandle, shared: &Arc<Shared>, id: u64, port: u16) {
                         tauri::async_runtime::spawn(async move {
                             let quit = app
                                 .dialog()
-                                .message("dsh 仍在运行。\n\n「完全退出」：结束 dsh 并退出应用；\n「后台运行」：隐藏窗口、应用与 dsh 继续在后台运行，点击 Dock 图标可恢复窗口。")
+                                .message("dsh 仍在运行。\n\n「完全退出」：结束 dsh 并退出应用；\n「后台运行」：隐藏窗口、应用与 dsh 继续在后台运行，点击菜单栏的 dsh 图标（或 Dock 图标）可恢复窗口。")
                                 .title("dsh desktop")
                                 .buttons(MessageDialogButtons::OkCancelCustom(
                                     "完全退出".into(),

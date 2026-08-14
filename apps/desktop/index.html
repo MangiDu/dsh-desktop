@@ -22,6 +22,16 @@
           <button id="btn-quit" type="button">退出</button>
         </div>
       </main>
+      <main class="panel hidden" id="panel-update">
+        <h1>dsh 更新</h1>
+        <p class="hint" id="update-status">正在检查…</p>
+        <pre id="update-log" class="log placeholder-text">执行后日志将在此显示</pre>
+        <div class="actions">
+          <button id="btn-update-apply" class="primary hidden" type="button">立即更新</button>
+          <button id="btn-update-restart" class="primary hidden" type="button">立即重启</button>
+          <button id="btn-update-close" type="button">关闭窗口</button>
+        </div>
+      </main>
       <main class="panel hidden" id="panel-plugin">
         <h1>安装 dsh 插件</h1>
         <p class="hint">执行 <code>dsh plugin --profile web add &lt;包名&gt;</code>（需要 pnpm）</p>
@@ -29,7 +39,7 @@
           <input id="plugin-pkg" type="text" placeholder="例如 @scope/pkg" spellcheck="false" />
           <button id="btn-plugin-add" class="primary" type="button">安装</button>
         </div>
-        <pre id="plugin-log" class="log"></pre>
+        <pre id="plugin-log" class="log placeholder-text">执行后日志将在此显示</pre>
         <div class="actions">
           <button id="btn-plugin-close" type="button">关闭窗口</button>
         </div>

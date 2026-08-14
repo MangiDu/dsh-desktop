@@ -1,22 +1,32 @@
 //! Manual update check + apply (supplementary requirement #3).
 //!
-//! Flow: menu "检查更新…" → compare installed version with the registry →
-//! dialog asks whether to update now → background install into a fresh
-//! version dir (same staging flow as bootstrap) → ask whether to restart →
-//! restart the dsh child with the new pointer.
+//! Flow: menu "检查更新…" opens the shell window's update panel → the UI
+//! calls `update_check` (npm view against the configured registry, semver
+//! compare) → on newer version the user clicks 立即更新 → `update_apply`
+//! installs into a fresh version dir in the background (staging + atomic
+//! `current` pointer; the running version is untouched), streaming progress
+//! lines to the panel → the panel offers 立即重启 (dsh_restart).
 
-use std::sync::Arc;
 use std::thread;
 
+use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
-use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
-use tauri_plugin_notification::NotificationExt;
 
-/// Installed-vs-latest comparison result.
+/// Installed-vs-latest comparison result (serialized to the update panel).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Check {
     pub current: String,
     pub latest: String,
     pub updatable: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Done {
+    ok: bool,
+    version: String,
+    error: Option<String>,
 }
 
 /// Query the registry for the latest version on the configured channel.
@@ -60,89 +70,74 @@ pub fn check(app: &AppHandle, settings: &crate::runtime::Settings) -> Result<Che
     })
 }
 
-fn notify(app: &AppHandle, title: &str, body: &str) {
-    println!("[dsh] notify: {title} :: {body}");
-    let _ = app.notification().builder().title(title).body(body).show();
+/// Panel command: compare installed vs registry.
+#[tauri::command]
+pub fn update_check(app: AppHandle) -> Result<Check, String> {
+    let settings = crate::runtime::load_settings(&app);
+    check(&app, &settings)
 }
 
-/// Menu handler: check → ask → install → ask restart → restart.
-pub fn check_and_update(app: &AppHandle, shared: &Arc<crate::dsh::Shared>) {
-    let app2 = app.clone();
-    let shared2 = shared.clone();
+/// Panel command: install the newest version in the background. Progress
+/// streams as `dsh://update-line`; completion as `dsh://update-done`.
+#[tauri::command]
+pub fn update_apply(app: AppHandle, state: tauri::State<'_, crate::AppState>) -> Result<(), String> {
+    let shared = state.0.clone();
     thread::spawn(move || {
-        let settings = crate::runtime::load_settings(&app2);
-        let result = check(&app2, &settings);
-        let info = match result {
-            Ok(info) => info,
+        let settings = crate::runtime::load_settings(&app);
+        let latest = match check(&app, &settings) {
+            Ok(c) if c.updatable => c.latest,
+            Ok(c) => {
+                let _ = app.emit(
+                    "dsh://update-done",
+                    Done {
+                        ok: false,
+                        version: c.latest,
+                        error: Some(format!("已是最新版本 {}，无需更新", c.current)),
+                    },
+                );
+                return;
+            }
             Err(e) => {
-                let _ = app2.dialog().message(format!("检查更新失败：{e}")).title("dsh 更新").kind(tauri_plugin_dialog::MessageDialogKind::Error).blocking_show();
+                let _ = app.emit(
+                    "dsh://update-done",
+                    Done {
+                        ok: false,
+                        version: String::new(),
+                        error: Some(e),
+                    },
+                );
                 return;
             }
         };
 
-        if !info.updatable {
-            let msg = if info.current == info.latest {
-                format!("已是最新版本：{}", info.current)
-            } else {
-                format!(
-                    "当前 {}（{}），最新 {}",
-                    info.current,
-                    if info.current == "dev" { "自定义 DSH_BIN，不适用自动更新" } else { "未解析" },
-                    info.latest
-                )
-            };
-            let _ = app2.dialog().message(msg).title("dsh 更新").blocking_show();
-            return;
-        }
-
-        let do_update = app2
-            .dialog()
-            .message(format!(
-                "发现新版本 {}（当前 {}）。\n现在更新吗？安装完成后会询问是否重启 dsh。",
-                info.latest, info.current
-            ))
-            .title("dsh 更新")
-            .buttons(MessageDialogButtons::OkCancelCustom("立即更新".into(), "稍后".into()))
-            .blocking_show();
-        if !do_update {
-            notify(&app2, "dsh 更新", "已跳过本次更新，可随时从菜单再次检查。");
-            return;
-        }
-
-        // Install with progress broadcast to the shell UI.
-        let app3 = app2.clone();
-        let shared3 = shared2.clone();
+        let app_lines = app.clone();
         let on_line = move |line: &str| {
             println!("[dsh] update: {line}");
-            shared3.push_line(line.to_string());
-            let phase = crate::dsh::Phase::Bootstrapping { line: line.to_string() };
-            *shared3.phase.lock().unwrap() = phase.clone();
-            let _ = app3.emit(crate::dsh::STATE_EVENT, &phase);
+            let _ = app_lines.emit("dsh://update-line", line.to_string());
         };
-        let spec = info.latest.clone();
-        match crate::runtime::bootstrap(&app2, &settings, &spec, &on_line) {
+        match crate::runtime::bootstrap(&app, &settings, &latest, &on_line) {
             Ok(version) => {
-                notify(&app2, "dsh 更新", &format!("v{version} 已就绪。"));
-                let restart_now = app2
-                    .dialog()
-                    .message(format!("v{version} 安装完成。重启 dsh 立即生效？（重启会中断当前会话）"))
-                    .title("dsh 更新")
-                    .buttons(MessageDialogButtons::OkCancelCustom("立即重启".into(), "稍后重启".into()))
-                    .blocking_show();
-                if restart_now {
-                    let _ = crate::dsh::start(&app2, &shared2);
-                } else {
-                    notify(&app2, "dsh 更新", "将在下次重启后生效（菜单「重启 dsh」可随时切换）。");
-                }
+                let _ = app.emit(
+                    "dsh://update-done",
+                    Done {
+                        ok: true,
+                        version,
+                        error: None,
+                    },
+                );
             }
             Err(e) => {
-                let _ = app2
-                    .dialog()
-                    .message(format!("更新安装失败：{e}"))
-                    .title("dsh 更新")
-                    .kind(tauri_plugin_dialog::MessageDialogKind::Error)
-                    .blocking_show();
+                let _ = app.emit(
+                    "dsh://update-done",
+                    Done {
+                        ok: false,
+                        version: latest,
+                        error: Some(e),
+                    },
+                );
             }
         }
+        shared.push_line("update flow finished".to_string());
     });
+    Ok(())
 }
