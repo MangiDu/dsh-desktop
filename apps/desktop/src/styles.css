@@ -26,6 +26,7 @@ body {
 #app {
   display: flex;
   padding: 26px;
+  padding-top: 46px; /* room for the overlay traffic lights */
   overflow-y: auto;
 }
 

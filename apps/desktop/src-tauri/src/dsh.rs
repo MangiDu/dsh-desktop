@@ -204,6 +204,8 @@ pub fn ensure_splash(app: &AppHandle) {
     if let Err(e) = app.clone().run_on_main_thread(move || {
         match WebviewWindowBuilder::new(&app, SPLASH_LABEL, WebviewUrl::App("index.html".into()))
             .title("dsh desktop")
+            .title_bar_style(tauri::TitleBarStyle::Overlay)
+            .hidden_title(true)
             .inner_size(520.0, 440.0)
             .min_inner_size(420.0, 380.0)
             .resizable(true)
