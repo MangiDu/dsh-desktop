@@ -98,6 +98,43 @@ const CLICK_LOG_SCRIPT: &str = r##"
 })();
 "##;
 
+/// Compensates for clicks lost to mid-gesture scrolls: the page scrolls
+/// between mousedown and mouseup (the dsh sidebar scrolls when an item
+/// gains focus/selection), the node under the cursor changes and WebKit
+/// drops the click (proven by the same-node probe: same=0 scrolled=1).
+/// If no click arrives within 90ms of the press, the cursor barely moved
+/// and the pressed node is still attached, re-dispatch a click on it —
+/// tightly gated so real drags, right/middle clicks and double-clicks
+/// are untouched.
+const CLICK_COMPENSATOR_SCRIPT: &str = r##"
+(function () {
+  var lastX = 0, lastY = 0;
+  document.addEventListener("mousemove", function (e) {
+    lastX = e.clientX; lastY = e.clientY;
+  }, true);
+  document.addEventListener("mousedown", function (e) {
+    if (e.button !== 0) return;
+    var node = e.target;
+    var x = e.clientX, y = e.clientY;
+    var gotClick = false;
+    function mark() { gotClick = true; }
+    document.addEventListener("click", mark, true);
+    setTimeout(function () {
+      document.removeEventListener("click", mark, true);
+      if (gotClick) return;
+      if (!node || !node.isConnected) return;
+      if (Math.abs(lastX - x) >= 6 || Math.abs(lastY - y) >= 6) return;
+      try {
+        node.dispatchEvent(new MouseEvent("click", {
+          bubbles: true, cancelable: true, view: window,
+          detail: 1, button: 0, clientX: lastX, clientY: lastY
+        }));
+      } catch (err) {}
+    }, 90);
+  }, true);
+})();
+"##;
+
 /// State broadcast to the shell UI (event `dsh://state` and `dsh_status`).
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "phase", rename_all = "camelCase")]
@@ -514,10 +551,12 @@ fn on_ready(app: &AppHandle, shared: &Arc<Shared>, id: u64, port: u16) {
             // key (browser-like); without this the first click only focuses.
             .accept_first_mouse(true)
             // Diagnostics for the "second click" issue: make the page
-            // inspectable from Safari's Develop menu and passively log
-            // mousedown/mouseup/click with target descriptors to the console.
+            // inspectable from Safari's Develop menu, passively log
+            // mousedown/mouseup/click with target descriptors to the
+            // console, and compensate clicks lost to mid-gesture scrolls.
             .devtools(true)
             .initialization_script(CLICK_LOG_SCRIPT)
+            .initialization_script(CLICK_COMPENSATOR_SCRIPT)
             .build()
         {
             Ok(window) => {
