@@ -203,9 +203,13 @@ fn ui_intent(state: tauri::State<'_, AppState>) -> Option<String> {
 
 /// Open the shell window on a specific panel ("plugin" | "update").
 fn open_shell_panel(app: &AppHandle, panel: &str) {
+    println!("[dsh] open_shell_panel: {panel}");
     if let Ok(mut intent) = app.state::<AppState>().0.ui_intent.lock() {
         *intent = Some(panel.to_string());
     }
+    // Push the panel to an ALREADY-LOADED shell window (its UI consumed the
+    // invoke-based intent at load); a fresh window picks it up via ui_intent.
+    let _ = app.emit_to(dsh::SPLASH_LABEL, "dsh://ui-intent", panel.to_string());
     dsh::ensure_splash(app);
 }
 
@@ -251,6 +255,7 @@ fn show_main_or_splash(app: &AppHandle) {
 
 /// Shared handler for the app menu and the tray menu.
 fn menu_action(app: &AppHandle, id: &str) {
+    println!("[dsh] menu action: {id}");
     match id {
         "menu-check-update" => open_shell_panel(app, "update"),
         "menu-install-plugin" => open_shell_panel(app, "plugin"),

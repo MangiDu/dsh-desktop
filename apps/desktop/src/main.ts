@@ -326,20 +326,28 @@ $("btn-settings-save").addEventListener("click", async () => {
   }
 });
 
+function openPanel(intent: string | null) {
+  if (intent === "plugin") show("plugin");
+  if (intent === "update") {
+    show("update");
+    void runUpdateCheck();
+    void loadVersions();
+    void loadHistory();
+  }
+  if (intent === "close-confirm") show("close-confirm");
+  if (intent === "settings") {
+    show("settings");
+    void loadSettings();
+  }
+}
+
+// Live switch while the shell window is already open (menu clicks with a
+// loaded window; the host pushes the panel through this event).
+listen<string>("dsh://ui-intent", (event) => {
+  openPanel(event.payload);
+});
+
 // Re-opened for a specific panel? The host stores the intent once.
 invoke<string | null>("ui_intent")
-  .then((intent) => {
-    if (intent === "plugin") show("plugin");
-    if (intent === "update") {
-      show("update");
-      void runUpdateCheck();
-      void loadVersions();
-      void loadHistory();
-    }
-    if (intent === "close-confirm") show("close-confirm");
-    if (intent === "settings") {
-      show("settings");
-      void loadSettings();
-    }
-  })
+  .then((intent) => openPanel(intent))
   .catch((err) => console.error("[shell] ui_intent failed:", err));

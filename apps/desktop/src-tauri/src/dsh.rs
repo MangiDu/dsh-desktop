@@ -178,6 +178,7 @@ fn emit_state(app: &AppHandle, phase: Phase) {
 }
 
 pub fn ensure_splash(app: &AppHandle) {
+    println!("[dsh] ensure_splash: exists={}", app.get_webview_window(SPLASH_LABEL).is_some());
     if app.get_webview_window(SPLASH_LABEL).is_some() {
         return;
     }
