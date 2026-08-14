@@ -27,6 +27,8 @@ const panels = {
   failed: $("panel-failed"),
   plugin: $("panel-plugin"),
   update: $("panel-update"),
+  "close-confirm": $("panel-close-confirm"),
+  settings: $("panel-settings"),
 };
 
 function show(panel: keyof typeof panels) {
@@ -36,6 +38,7 @@ function show(panel: keyof typeof panels) {
 }
 
 function appendLog(el: HTMLElement, line: string) {
+  el.classList.remove("hidden");
   if (el.classList.contains("placeholder-text")) {
     el.classList.remove("placeholder-text");
     el.textContent = "";
@@ -157,6 +160,7 @@ async function runUpdateCheck() {
 $("btn-update-apply").addEventListener("click", async () => {
   $("update-status").textContent = "正在安装，请稍候…";
   $("btn-update-apply").classList.add("hidden");
+  $("update-log").classList.remove("hidden");
   try {
     await invoke("update_apply");
   } catch (err) {
@@ -190,6 +194,65 @@ listen<UpdateDone>("dsh://update-done", (event) => {
   }
 });
 
+// Close-confirm panel (remember choice checkbox).
+const sendCloseChoice = async (quit: boolean) => {
+  const remember = ($("close-remember") as HTMLInputElement).checked;
+  try {
+    await invoke("close_choice", { quit, remember });
+  } catch (err) {
+    console.error("[shell] close_choice failed:", err);
+  }
+};
+$("btn-close-quit").addEventListener("click", () => void sendCloseChoice(true));
+$("btn-close-background").addEventListener("click", () => void sendCloseChoice(false));
+
+// Settings panel.
+type Settings = {
+  channel: string;
+  autoUpdate: boolean;
+  intervalHours: number;
+  registry: string;
+  lastCheck: number | null;
+  lastProjectDir: string | null;
+  closeAction: string;
+};
+
+async function loadSettings() {
+  try {
+    const s = await invoke<Settings>("settings_get");
+    ($("set-close-action") as HTMLSelectElement).value = s.closeAction;
+    ($("set-channel") as HTMLSelectElement).value = s.channel;
+    ($("set-auto-update") as HTMLInputElement).checked = s.autoUpdate;
+    ($("set-interval") as HTMLInputElement).value = String(s.intervalHours);
+    ($("set-registry") as HTMLInputElement).value = s.registry;
+    $("settings-status").textContent = "";
+  } catch (err) {
+    $("settings-status").textContent = `加载失败：${err}`;
+  }
+}
+
+$("btn-settings-save").addEventListener("click", async () => {
+  const settings: Settings = {
+    channel: ($("set-channel") as HTMLSelectElement).value,
+    autoUpdate: ($("set-auto-update") as HTMLInputElement).checked,
+    intervalHours: Number(($("set-interval") as HTMLInputElement).value) || 12,
+    registry: ($("set-registry") as HTMLInputElement).value.trim() || "https://registry.npmjs.org",
+    lastCheck: null,
+    lastProjectDir: null,
+    closeAction: ($("set-close-action") as HTMLSelectElement).value,
+  };
+  try {
+    await invoke("settings_set", { settings });
+    $("settings-status").textContent = "已保存 ✓";
+  } catch (err) {
+    $("settings-status").textContent = `保存失败：${err}`;
+  }
+});
+
+$("btn-settings-close").addEventListener("click", async () => {
+  await getCurrentWindow().close();
+});
+
 // Re-opened for a specific panel? The host stores the intent once.
 invoke<string | null>("ui_intent")
   .then((intent) => {
@@ -197,6 +260,11 @@ invoke<string | null>("ui_intent")
     if (intent === "update") {
       show("update");
       void runUpdateCheck();
+    }
+    if (intent === "close-confirm") show("close-confirm");
+    if (intent === "settings") {
+      show("settings");
+      void loadSettings();
     }
   })
   .catch((err) => console.error("[shell] ui_intent failed:", err));

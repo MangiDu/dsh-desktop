@@ -96,6 +96,57 @@ h1 {
   display: none !important;
 }
 
+.checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #c8c8d0;
+  cursor: pointer;
+  user-select: none;
+}
+
+.settings-grid {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+  color: #c8c8d0;
+}
+
+.setting-row span {
+  white-space: nowrap;
+}
+
+.setting-row select,
+.setting-row input {
+  appearance: none;
+  border: 1px solid #34343e;
+  background: #17171c;
+  color: #e8e8ea;
+  border-radius: 8px;
+  padding: 7px 10px;
+  font-size: 13px;
+  min-width: 0;
+}
+
+.setting-row input[type="number"],
+.setting-row input[type="text"] {
+  width: 180px;
+}
+
+.setting-row.checkbox {
+  justify-content: flex-start;
+}
+
 .row {
   display: flex;
   gap: 8px;

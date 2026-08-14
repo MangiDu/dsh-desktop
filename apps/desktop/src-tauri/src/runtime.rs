@@ -38,6 +38,13 @@ pub struct Settings {
     pub registry: String,
     pub last_check: Option<u64>,
     pub last_project_dir: Option<String>,
+    /// Close-button behaviour: "ask" | "quit" | "background".
+    #[serde(default = "default_close_action")]
+    pub close_action: String,
+}
+
+fn default_close_action() -> String {
+    "ask".to_string()
 }
 
 impl Default for Settings {
@@ -49,6 +56,7 @@ impl Default for Settings {
             registry: "https://registry.npmjs.org".into(),
             last_check: None,
             last_project_dir: None,
+            close_action: "ask".to_string(),
         }
     }
 }

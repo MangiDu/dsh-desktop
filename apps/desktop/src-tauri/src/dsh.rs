@@ -12,14 +12,14 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, Url, WebviewUrl, WebviewWindowBuilder};
-use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
+
 
 /// Async-signal-safe SIGTERM/SIGINT handler: only sets a flag.
 static TERM_FLAG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -80,8 +80,6 @@ pub struct Shared {
     pub phase: Mutex<Phase>,
     pub ring: Mutex<VecDeque<String>>,
     pub seq: AtomicU64,
-    /// Guards against stacking close-confirmation dialogs.
-    pub close_prompt_open: AtomicBool,
     /// Panel the shell UI should open on next load ("plugin", …).
     pub ui_intent: Mutex<Option<String>>,
 }
@@ -401,29 +399,23 @@ fn on_ready(app: &AppHandle, shared: &Arc<Shared>, id: u64, port: u16) {
                             return;
                         }
                         api.prevent_close();
-                        if shared4.close_prompt_open.swap(true, Ordering::SeqCst) {
-                            return;
-                        }
-                        let window3 = window2.clone();
-                        let app = window3.app_handle().clone();
-                        let shared5 = shared4.clone();
-                        tauri::async_runtime::spawn(async move {
-                            let quit = app
-                                .dialog()
-                                .message("dsh 仍在运行。\n\n「完全退出」：结束 dsh 并退出应用；\n「后台运行」：隐藏窗口、应用与 dsh 继续在后台运行，点击菜单栏的 dsh 图标（或 Dock 图标）可恢复窗口。")
-                                .title("dsh desktop")
-                                .buttons(MessageDialogButtons::OkCancelCustom(
-                                    "完全退出".into(),
-                                    "后台运行".into(),
-                                ))
-                                .blocking_show();
-                            shared5.close_prompt_open.store(false, Ordering::SeqCst);
-                            if quit {
-                                app.exit(0);
-                            } else {
-                                let _ = window3.hide();
+                        let app = window2.app_handle().clone();
+                        // Remembered close behaviour wins; otherwise ask in
+                        // the shell window (checkbox + buttons panel).
+                        match crate::runtime::load_settings(&app).close_action.as_str() {
+                            "quit" => app.exit(0),
+                            "background" => {
+                                let _ = window2.hide();
                             }
-                        });
+                            _ => {
+                                if let Ok(mut intent) =
+                                    app.state::<crate::AppState>().0.ui_intent.lock()
+                                {
+                                    *intent = Some("close-confirm".to_string());
+                                }
+                                crate::dsh::ensure_splash(&app);
+                            }
+                        }
                     }
                 });
                 if let Some(s) = app2.get_webview_window(SPLASH_LABEL) {

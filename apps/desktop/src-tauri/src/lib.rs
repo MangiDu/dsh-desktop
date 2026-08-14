@@ -28,6 +28,27 @@ fn app_quit(app: AppHandle) {
     app.exit(0);
 }
 
+/// Close-confirm panel: act on the user's choice, optionally remembering it.
+#[tauri::command]
+fn close_choice(app: AppHandle, quit: bool, remember: bool) -> Result<(), String> {
+    if remember {
+        let mut settings = runtime::load_settings(&app);
+        settings.close_action = if quit { "quit" } else { "background" }.to_string();
+        runtime::save_settings(&app, &settings)?;
+    }
+    if quit {
+        app.exit(0);
+    } else {
+        if let Some(w) = app.get_webview_window(dsh::MAIN_LABEL) {
+            let _ = w.hide();
+        }
+        if let Some(s) = app.get_webview_window(dsh::SPLASH_LABEL) {
+            let _ = s.close();
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn settings_get(app: AppHandle) -> runtime::Settings {
     runtime::load_settings(&app)
@@ -119,6 +140,7 @@ fn menu_action(app: &AppHandle, id: &str) {
     match id {
         "menu-check-update" => open_shell_panel(app, "update"),
         "menu-install-plugin" => open_shell_panel(app, "plugin"),
+        "menu-settings" => open_shell_panel(app, "settings"),
         "menu-restart-dsh" => {
             let shared = app.state::<AppState>().0.clone();
             let _ = dsh::start(app, &shared);
@@ -144,7 +166,8 @@ pub fn run() {
             dsh_plugin,
             ui_intent,
             update::update_check,
-            update::update_apply
+            update::update_apply,
+            close_choice
         ])
         .setup(|app| {
             let shared = app.state::<AppState>().0.clone();
@@ -165,11 +188,14 @@ pub fn run() {
                     .build(app)?;
                 let restart = MenuItemBuilder::with_id("menu-restart-dsh", "重启 dsh")
                     .build(app)?;
+                let settings = MenuItemBuilder::with_id("menu-settings", "设置…")
+                    .accelerator("CmdOrCtrl+,")
+                    .build(app)?;
                 let quit = MenuItemBuilder::with_id("menu-quit", "退出 dsh desktop")
                     .accelerator("CmdOrCtrl+Q")
                     .build(app)?;
                 let submenu = SubmenuBuilder::new(app, "dsh desktop")
-                    .items(&[&check, &plugin, &restart, &quit])
+                    .items(&[&check, &plugin, &restart, &settings, &quit])
                     .build()?;
                 let menu = MenuBuilder::new(app).items(&[&submenu]).build()?;
                 app.set_menu(menu)?;
@@ -184,9 +210,10 @@ pub fn run() {
                 let show = MenuItemBuilder::with_id("menu-tray-show", "显示窗口").build(app)?;
                 let check = MenuItemBuilder::with_id("menu-check-update", "检查更新…").build(app)?;
                 let plugin = MenuItemBuilder::with_id("menu-install-plugin", "安装插件…").build(app)?;
+                let settings_item = MenuItemBuilder::with_id("menu-settings", "设置…").build(app)?;
                 let quit = MenuItemBuilder::with_id("menu-quit", "退出 dsh desktop").build(app)?;
                 let tray_menu = MenuBuilder::new(app)
-                    .items(&[&show, &check, &plugin, &quit])
+                    .items(&[&show, &check, &plugin, &settings_item, &quit])
                     .build()?;
                 let tray = TrayIconBuilder::with_id("main-tray")
                     .icon(tauri::image::Image::from_bytes(include_bytes!(
