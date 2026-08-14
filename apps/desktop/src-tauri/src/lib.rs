@@ -1,4 +1,6 @@
 mod dsh;
+mod listener;
+mod runtime;
 
 use std::sync::Arc;
 
@@ -23,25 +25,61 @@ fn app_quit(app: AppHandle) {
     app.exit(0);
 }
 
+#[tauri::command]
+fn settings_get(app: AppHandle) -> runtime::Settings {
+    runtime::load_settings(&app)
+}
+
+#[tauri::command]
+fn settings_set(app: AppHandle, settings: runtime::Settings) -> Result<(), String> {
+    runtime::save_settings(&app, &settings)
+}
+
+#[tauri::command]
+fn runtime_bootstrap(app: AppHandle, state: tauri::State<'_, AppState>) -> Result<(), String> {
+    dsh::bootstrap_now(&app, &state.0)
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(AppState(Arc::new(dsh::Shared::default())))
-        .invoke_handler(tauri::generate_handler![dsh_status, dsh_restart, app_quit])
+        .invoke_handler(tauri::generate_handler![
+            dsh_status,
+            dsh_restart,
+            app_quit,
+            settings_get,
+            settings_set,
+            runtime_bootstrap
+        ])
         .setup(|app| {
             let shared = app.state::<AppState>().0.clone();
+
+            // Replace the default SIGTERM/SIGINT disposition so an external
+            // kill still cleans up the dsh child.
+            dsh::install_term_handler();
+
+            // Persist default settings on first run.
+            let settings = runtime::load_settings(app.handle());
+            let _ = runtime::save_settings(app.handle(), &settings);
 
             // Reap a dsh child orphaned by a previous run (e.g. SIGKILLed app).
             dsh::reap_orphan(app.handle());
 
-            // Clean exit on external SIGTERM/SIGINT (Ctrl+C in `tauri dev`,
-            // `kill <app>` in acceptance tests): kill the child, then exit.
+            // Clean exit on external SIGTERM/SIGINT: a plain libc handler sets
+            // a flag (async-signal-safe) and a watcher thread performs the
+            // child cleanup + exit. (ctrlc's handler proved unreliable inside
+            // the macOS app: the signal never reached it.)
             let slot = shared.slot.clone();
-            ctrlc::set_handler(move || {
-                dsh::stop(&slot);
-                std::process::exit(0);
-            })
-            .ok();
+            std::thread::spawn(move || loop {
+                if dsh::term_flag() {
+                    println!("[dsh] SIGTERM/SIGINT: stopping child, exiting");
+                    dsh::stop(&slot);
+                    std::process::exit(0);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(150));
+            });
 
             // Show the shell UI first so it can render the "starting" state.
             dsh::ensure_splash(app.handle());

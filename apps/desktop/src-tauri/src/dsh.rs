@@ -21,6 +21,26 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, Url, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 
+/// Async-signal-safe SIGTERM/SIGINT handler: only sets a flag.
+static TERM_FLAG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+extern "C" fn on_term_signal(_sig: libc::c_int) {
+    TERM_FLAG.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Install the libc signal handlers (called once from setup).
+pub fn install_term_handler() {
+    unsafe {
+        libc::signal(libc::SIGTERM, on_term_signal as *const () as libc::sighandler_t);
+        libc::signal(libc::SIGINT, on_term_signal as *const () as libc::sighandler_t);
+    }
+}
+
+/// Whether a termination signal was received.
+pub fn term_flag() -> bool {
+    TERM_FLAG.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 pub const STATE_EVENT: &str = "dsh://state";
 pub const SPLASH_LABEL: &str = "splash";
 pub const MAIN_LABEL: &str = "main";
@@ -33,6 +53,7 @@ const RING_CAP: usize = 400;
 #[serde(tag = "phase", rename_all = "camelCase")]
 pub enum Phase {
     Starting,
+    Bootstrapping { line: String },
     Ready { url: String },
     StartFailed { reason: String, log_tail: String },
     Exited { code: Option<i32>, log_tail: String },
@@ -64,6 +85,16 @@ pub struct Shared {
 }
 
 impl Shared {
+    /// Append a line to the in-memory ring only (no log file context).
+    pub fn push_line(&self, line: String) {
+        if let Ok(mut ring) = self.ring.lock() {
+            ring.push_back(line);
+            while ring.len() > RING_CAP {
+                ring.pop_front();
+            }
+        }
+    }
+
     pub fn log_tail(&self) -> String {
         let ring = self.ring.lock().unwrap();
         let mut lines: Vec<&String> = ring.iter().filter(|l| !l.trim().is_empty()).collect();
@@ -109,30 +140,6 @@ pub fn remove_pidfile(app: &AppHandle) {
     if let Ok(path) = pid_file_path(app) {
         let _ = fs::remove_file(path);
     }
-}
-
-/// M1 resolution: `DSH_BIN` env var, else a dev-convenience default.
-/// M2 replaces this with the managed runtime under the app data dir.
-pub fn resolve_dsh_bin() -> Result<PathBuf, String> {
-    if let Ok(p) = std::env::var("DSH_BIN") {
-        if !p.trim().is_empty() {
-            let pb = PathBuf::from(p.trim());
-            if pb.is_file() {
-                return Ok(pb);
-            }
-            return Err(format!("DSH_BIN 指向的文件不存在: {p}"));
-        }
-    }
-    let candidate = PathBuf::from(
-        "/Users/duxx/.npm/_npx/1e7f6d9597241db0/node_modules/@deepseek-ai/dsh/lib/bin.js",
-    );
-    if candidate.is_file() {
-        return Ok(candidate);
-    }
-    Err(
-        "未找到 dsh 安装。请设置 DSH_BIN 环境变量指向 @deepseek-ai/dsh 的 lib/bin.js（M2 起由受管运行时自动安装）"
-            .to_string(),
-    )
 }
 
 fn check_node() -> Result<String, String> {
@@ -207,11 +214,16 @@ pub fn start(app: &AppHandle, shared: &Arc<Shared>) -> Result<(), String> {
     println!("[dsh] start id={id}");
     emit_state(app, Phase::Starting);
 
-    let bin = match resolve_dsh_bin() {
-        Ok(b) => b,
-        Err(reason) => {
+    let bin = match crate::runtime::resolve_active_bin(app) {
+        crate::runtime::Resolve::Ready(b) => b,
+        crate::runtime::Resolve::NeedBootstrap => {
+            let settings = crate::runtime::load_settings(app);
+            bootstrap_in_background(app, shared, settings);
+            return Ok(());
+        }
+        crate::runtime::Resolve::Failed(reason) => {
             fail_start(app, shared, reason);
-            return Err("resolve dsh bin failed".to_string());
+            return Err("runtime resolve failed".to_string());
         }
     };
     let node_version = match check_node() {
@@ -424,7 +436,11 @@ fn on_ready(app: &AppHandle, shared: &Arc<Shared>, id: u64, port: u16) {
     }) {
         eprintln!("[dsh] run_on_main_thread failed: {e}");
     }
-    emit_state(app, Phase::Ready { url });
+    emit_state(app, Phase::Ready { url: url.clone() });
+
+    // Attach the non-invasive event listeners (permission requests, ask-user
+    // questions, agent errors) to this child's public downlinks.
+    crate::listener::spawn(app, shared, id, &url);
 }
 
 fn waiter(app: &AppHandle, shared: &Arc<Shared>, id: u64, started: Instant) {
@@ -492,6 +508,48 @@ fn on_exit(app: &AppHandle, shared: &Arc<Shared>, id: u64, code: Option<i32>) {
     }) {
         eprintln!("[dsh] run_on_main_thread failed: {e}");
     }
+}
+
+/// Kick off a runtime install on a background thread, streaming progress to
+/// the shell UI, then start the child with the fresh runtime.
+fn bootstrap_in_background(app: &AppHandle, shared: &Arc<Shared>, settings: crate::runtime::Settings) {
+    let initial = Phase::Bootstrapping {
+        line: "正在安装 dsh 运行时（首次约 1 分钟）…".to_string(),
+    };
+    *shared.phase.lock().unwrap() = initial.clone();
+    emit_state(app, initial);
+
+    let app2 = app.clone();
+    let shared2 = shared.clone();
+    thread::spawn(move || {
+        let app3 = app2.clone();
+        let shared3 = shared2.clone();
+        let on_line = move |line: &str| {
+            println!("[dsh] bootstrap: {line}");
+            shared3.push_line(line.to_string());
+            let phase = Phase::Bootstrapping { line: line.to_string() };
+            *shared3.phase.lock().unwrap() = phase.clone();
+            emit_state(&app3, phase);
+        };
+        match crate::runtime::bootstrap(&app2, &settings, &on_line) {
+            Ok(version) => {
+                println!("[dsh] bootstrap done: {version}");
+                if let Err(e) = start(&app2, &shared2) {
+                    eprintln!("[dsh] post-bootstrap start failed: {e}");
+                }
+            }
+            Err(reason) => {
+                fail_start(&app2, &shared2, format!("dsh 运行时安装失败: {reason}"));
+            }
+        }
+    });
+}
+
+/// Command entry: retry a failed bootstrap.
+pub fn bootstrap_now(app: &AppHandle, shared: &Arc<Shared>) -> Result<(), String> {
+    let settings = crate::runtime::load_settings(app);
+    bootstrap_in_background(app, shared, settings);
+    Ok(())
 }
 
 fn fail_start(app: &AppHandle, shared: &Arc<Shared>, reason: String) {

@@ -9,6 +9,7 @@ import { invoke } from "@tauri-apps/api/core";
 
 type DshState =
   | { phase: "starting" }
+  | { phase: "bootstrapping"; line: string }
   | { phase: "ready"; url: string; version?: string }
   | { phase: "start-failed"; reason: string; logTail: string }
   | { phase: "exited"; code: number | null; logTail: string };
@@ -42,6 +43,9 @@ async function onState(state: DshState) {
     case "starting":
       $("splash-hint").textContent = "正在启动 dsh…";
       show("splash");
+      break;
+    case "bootstrapping":
+      $("splash-hint").textContent = state.line;
       break;
     case "ready":
       $("splash-hint").textContent = "dsh 已就绪";
