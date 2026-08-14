@@ -259,6 +259,9 @@ pub fn start(app: &AppHandle, shared: &Arc<Shared>) -> Result<(), String> {
     let bin = match crate::runtime::resolve_active_bin(app) {
         crate::runtime::Resolve::Ready(b) => b,
         crate::runtime::Resolve::NeedBootstrap => {
+            // A first-run install takes minutes and needs its progress bar
+            // visible from the start.
+            ensure_splash(app);
             let settings = crate::runtime::load_settings(app);
             bootstrap_in_background(app, shared, settings);
             return Ok(());
@@ -651,6 +654,7 @@ fn bootstrap_in_background(app: &AppHandle, shared: &Arc<Shared>, settings: crat
 
 /// Command entry: retry a failed bootstrap.
 pub fn bootstrap_now(app: &AppHandle, shared: &Arc<Shared>) -> Result<(), String> {
+    ensure_splash(app);
     let settings = crate::runtime::load_settings(app);
     bootstrap_in_background(app, shared, settings);
     Ok(())

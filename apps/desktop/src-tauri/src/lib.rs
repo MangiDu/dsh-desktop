@@ -468,8 +468,19 @@ pub fn run() {
                 std::thread::sleep(std::time::Duration::from_millis(150));
             });
 
-            // Show the shell UI first so it can render the "starting" state.
-            dsh::ensure_splash(app.handle());
+            // No splash window on a fast start: the main window appears
+            // directly. Only slow starts (>1.2s), first-run installs and
+            // failures bring the shell window up.
+            let shared_slow = shared.clone();
+            let slow_app = app.handle().clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(1200));
+                let still_starting =
+                    matches!(*shared_slow.phase.lock().unwrap(), dsh::Phase::Starting);
+                if still_starting {
+                    dsh::ensure_splash(&slow_app);
+                }
+            });
             let _ = dsh::start(app.handle(), &shared);
 
             // Auto-update scheduler (respects settings.autoUpdate).
