@@ -12,7 +12,7 @@
 //! ```
 
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -478,14 +478,39 @@ pub fn bootstrap(
         return Err(format!("版本 {version} 安装不完整"));
     }
 
-    // Verify the exact CLI runs and reports the right version.
-    let check = Command::new("node")
+    // Verify the exact CLI runs and reports the right version (bundled
+    // toolchain preferred — a bare PATH must not fail here — with a 10s
+    // timeout so a hang can never sit silently).
+    let (verify_node, _) = crate::nodejs::node_program(app);
+    let mut verify = Command::new(&verify_node)
         .arg(bin_of(&target))
         .arg("--version")
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|e| format!("验证 --version 失败: {e}"))?;
-    let reported = String::from_utf8_lossy(&check.stdout).trim().to_string();
-    if !check.status.success() || reported != version {
+    let mut verify_out = verify.stdout.take();
+    let started = std::time::Instant::now();
+    let vstatus = loop {
+        match verify.try_wait() {
+            Ok(Some(st)) => break st,
+            Ok(None) => {
+                if started.elapsed() > std::time::Duration::from_secs(10) {
+                    let _ = verify.kill();
+                    let _ = verify.wait();
+                    return Err("验证 --version 超时（10 秒）".to_string());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Err(e) => return Err(format!("验证 --version 失败: {e}")),
+        }
+    };
+    let mut reported = String::new();
+    if let Some(mut out) = verify_out.take() {
+        let _ = out.read_to_string(&mut reported);
+    }
+    let reported = reported.trim().to_string();
+    if !vstatus.success() || reported != version {
         return Err(format!("版本验证失败: 期望 {version}，实际 {reported}"));
     }
 
