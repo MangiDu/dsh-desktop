@@ -109,6 +109,7 @@ $("btn-plugin-add").addEventListener("click", async () => {
   const input = $("plugin-pkg") as HTMLInputElement;
   const pkg = input.value.trim();
   if (!pkg) return;
+  $("plugin-log").classList.remove("hidden");
   appendLog($("plugin-log"), `安装 ${pkg}…`);
   try {
     await invoke("dsh_plugin", { args: ["add", pkg] });
