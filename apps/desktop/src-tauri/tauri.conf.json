@@ -21,6 +21,9 @@
     "category": "DeveloperTool",
     "shortDescription": "Desktop shell for dsh",
     "longDescription": "Desktop wrapper for the DeepSeek Harness (dsh) with managed runtime and updates.",
+    "macOS": {
+      "signingIdentity": "-"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
