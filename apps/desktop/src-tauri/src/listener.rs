@@ -152,6 +152,16 @@ pub fn toast(app: &AppHandle, shared: &Arc<crate::dsh::Shared>, title: &str, bod
             body: body.to_string(),
         },
     );
+    // The toast window persists after its 6s auto-hide (or a click-dismiss)
+    // but stays hidden forever — every event after the first would update
+    // text in an invisible window. Re-show it on each event; doing it after
+    // the emit means the fresh payload is what renders. A brand-new window
+    // created by ensure_toast is visible by default and may not exist yet
+    // when this line runs, so both branches are safe (show is idempotent
+    // and never steals focus on macOS: it sets visibility, not key status).
+    if let Some(w) = app.get_webview_window(TOAST_LABEL) {
+        let _ = w.show();
+    }
     let app = app.clone();
     std::thread::spawn(move || {
         std::thread::sleep(Duration::from_secs(6));
