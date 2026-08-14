@@ -1,6 +1,6 @@
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+
 
 /**
  * Shell UI contract (M1):
@@ -117,10 +117,6 @@ $("btn-plugin-add").addEventListener("click", async () => {
   }
 });
 
-$("btn-plugin-close").addEventListener("click", async () => {
-  await getCurrentWindow().close();
-});
-
 listen<string>("dsh://plugin-log", (event) => {
   appendLog($("plugin-log"), event.payload);
 });
@@ -171,10 +167,6 @@ $("btn-update-apply").addEventListener("click", async () => {
 $("btn-update-restart").addEventListener("click", async () => {
   show("splash");
   await invoke("dsh_restart");
-});
-
-$("btn-update-close").addEventListener("click", async () => {
-  await getCurrentWindow().close();
 });
 
 listen<string>("dsh://update-line", (event) => {
@@ -247,10 +239,6 @@ $("btn-settings-save").addEventListener("click", async () => {
   } catch (err) {
     $("settings-status").textContent = `保存失败：${err}`;
   }
-});
-
-$("btn-settings-close").addEventListener("click", async () => {
-  await getCurrentWindow().close();
 });
 
 // Re-opened for a specific panel? The host stores the intent once.
