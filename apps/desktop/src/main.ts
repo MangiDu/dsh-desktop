@@ -57,13 +57,17 @@ async function onState(state: DshState) {
   switch (state.phase) {
     case "starting":
       $("splash-hint").textContent = "正在启动 dsh…";
+      $("splash-progress").classList.add("hidden");
       show("splash");
       break;
     case "bootstrapping":
       $("splash-hint").textContent = state.line;
+      $("splash-progress").classList.remove("hidden");
+      show("splash");
       break;
     case "ready":
       $("splash-hint").textContent = "dsh 已就绪";
+      $("splash-progress").classList.add("hidden");
       // Main window is created by Rust; the splash window closes itself.
       break;
     case "start-failed":
@@ -277,6 +281,7 @@ $("btn-update-apply").addEventListener("click", async () => {
   $("update-status-text").textContent = "正在安装，请稍候…";
   $("btn-update-apply").classList.add("hidden");
   $("update-log").classList.remove("hidden");
+  $("update-progress").classList.remove("hidden");
   try {
     await invoke("update_apply");
   } catch (err) {
@@ -295,6 +300,7 @@ listen<string>("dsh://update-line", (event) => {
 
 listen<UpdateDone>("dsh://update-done", (event) => {
   const done = event.payload;
+  $("update-progress").classList.add("hidden");
   if (done.ok) {
     $("update-status-text").textContent = `v${done.version} 已就绪`;
     appendLog($("update-log"), "✓ 安装完成");

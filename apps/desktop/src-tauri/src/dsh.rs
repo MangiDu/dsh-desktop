@@ -146,15 +146,21 @@ pub fn remove_pidfile(app: &AppHandle) {
     }
 }
 
-fn check_node() -> Result<String, String> {
-    let out = Command::new("node")
+fn check_node(app: &AppHandle) -> Result<String, String> {
+    let (program, source) = crate::nodejs::node_program(app);
+    let out = Command::new(&program)
         .arg("--version")
         .output()
-        .map_err(|e| format!("找不到 node 运行时（PATH 中无 node）: {e}"))?;
+        .map_err(|e| format!("找不到 node 运行时（捆绑缺失且 PATH 中无 node）: {e}"))?;
     if !out.status.success() {
         return Err("node --version 执行失败".to_string());
     }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    let version = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    match source {
+        Some(dir) => println!("[dsh] node toolchain: bundled ({dir})"),
+        None => println!("[dsh] node toolchain: system PATH"),
+    }
+    Ok(version)
 }
 
 fn open_log(app: &AppHandle) -> Result<(PathBuf, Arc<Mutex<Option<File>>>), String> {
@@ -258,7 +264,7 @@ pub fn start(app: &AppHandle, shared: &Arc<Shared>) -> Result<(), String> {
             return Err("runtime resolve failed".to_string());
         }
     };
-    let node_version = match check_node() {
+    let node_version = match check_node(app) {
         Ok(v) => v,
         Err(reason) => {
             fail_start(app, shared, reason);
@@ -296,12 +302,15 @@ pub fn start(app: &AppHandle, shared: &Arc<Shared>) -> Result<(), String> {
         }
     };
 
-    let mut cmd = Command::new("node");
+    let (node_program, _) = crate::nodejs::node_program(app);
+    let mut cmd = Command::new(&node_program);
     cmd.arg(&bin).arg("web").arg("--port").arg("0").current_dir(&cwd);
     println!("[dsh] child cwd: {}", cwd.display());
-    cmd.env("DSH_DESKTOP_CHILD", "1")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    cmd.env("DSH_DESKTOP_CHILD", "1");
+    if let Some(path) = crate::nodejs::enriched_path(app) {
+        cmd.env("PATH", path);
+    }
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
     let mut child = match cmd.spawn() {
         Ok(c) => c,

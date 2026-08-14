@@ -50,7 +50,9 @@ pub fn check(app: &AppHandle, settings: &crate::runtime::Settings) -> Result<Che
     let cache = data.join(crate::runtime::NPM_CACHE_DIR);
     let _ = std::fs::create_dir_all(&cache);
 
-    let mut child = std::process::Command::new("npm")
+    let (npm_program, npm_prefix) = crate::nodejs::npm_invocation(app);
+    let mut child = std::process::Command::new(&npm_program)
+        .args(&npm_prefix)
         .args(["view", "@deepseek-ai/dsh", "version"])
         .args(["--registry", &settings.registry])
         .args(["--cache", cache.to_str().unwrap_or_default()])

@@ -19,3 +19,4 @@ runtime/
 # Logs
 *.log
 apps/desktop/src-tauri/gen/
+apps/desktop/src-tauri/binaries/node-runtime/

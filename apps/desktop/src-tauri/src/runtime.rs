@@ -370,11 +370,13 @@ pub fn bootstrap(
     spec: &str,
     on_line: &(dyn Fn(&str) + Send + Sync),
 ) -> Result<String, String> {
-    // npm must exist (it ships with Node, which start() already checked).
-    let npm_check = Command::new("npm")
+    // npm ships with the bundled Node; check whichever toolchain applies.
+    let (npm_program, npm_prefix) = crate::nodejs::npm_invocation(app);
+    let npm_check = Command::new(&npm_program)
+        .args(&npm_prefix)
         .arg("--version")
         .output()
-        .map_err(|e| format!("找不到 npm（PATH 中无 npm，插件与运行时安装依赖它）: {e}"))?;
+        .map_err(|e| format!("找不到 npm（捆绑缺失且 PATH 中无 npm，插件与运行时安装依赖它）: {e}"))?;
     if !npm_check.status.success() {
         return Err("npm --version 执行失败".to_string());
     }
@@ -391,7 +393,11 @@ pub fn bootstrap(
     let _ = fs::remove_dir_all(&staging);
 
     on_line(&format!("安装 {PKG}@{spec}({})…", settings.registry));
-    let mut cmd = Command::new("npm");
+    let mut cmd = Command::new(&npm_program);
+    cmd.args(&npm_prefix);
+    if let Some(path) = crate::nodejs::enriched_path(app) {
+        cmd.env("PATH", path);
+    }
     cmd.args(["install", &format!("{PKG}@{spec}")])
         .args(["--prefix", staging.to_str().unwrap_or_default()])
         .args(["--cache", cache.to_str().unwrap_or_default()])
@@ -400,17 +406,62 @@ pub fn bootstrap(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = cmd.spawn().map_err(|e| format!("启动 npm install 失败: {e}"))?;
+
+    // Collect npm output on a reader thread (npm is quiet while downloading,
+    // so the loop below also emits a heartbeat so the UI never looks stuck).
+    use std::sync::{Arc, Mutex};
+    let npm_out: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let npm_out2 = npm_out.clone();
     if let Some(out) = child.stdout.take() {
-        for line in BufReader::new(out).lines().map_while(Result::ok) {
-            if !line.trim().is_empty() {
-                on_line(&line);
+        std::thread::spawn(move || {
+            for line in BufReader::new(out).lines().map_while(Result::ok) {
+                if !line.trim().is_empty() {
+                    npm_out2.lock().unwrap().push(line);
+                }
+            }
+        });
+    }
+    let npm_out3 = npm_out.clone();
+    if let Some(err) = child.stderr.take() {
+        std::thread::spawn(move || {
+            for line in BufReader::new(err).lines().map_while(Result::ok) {
+                if !line.trim().is_empty() {
+                    npm_out3.lock().unwrap().push(format!("[stderr] {line}"));
+                }
+            }
+        });
+    }
+
+    // Activity is communicated by the shell UI's indeterminate progress bar;
+    // this loop only waits and enforces nothing else.
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(st)) => break st,
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(200)),
+            Err(e) => {
+                let _ = child.kill();
+                let _ = fs::remove_dir_all(&staging);
+                return Err(format!("等待 npm install 失败: {e}"));
             }
         }
-    }
-    let status = child.wait().map_err(|e| format!("等待 npm install 失败: {e}"))?;
+    };
     if !status.success() {
+        let tail: Vec<String> = npm_out.lock().unwrap().iter().rev().take(8).cloned().rev().collect();
         let _ = fs::remove_dir_all(&staging);
-        return Err(format!("npm install 退出码 {:?}（网络或 registry 问题）", status.code()));
+        let detail = if tail.is_empty() {
+            String::new()
+        } else {
+            format!("\n{}", tail.join("\n"))
+        };
+        return Err(format!(
+            "npm install 退出码 {:?}（网络、registry 或依赖脚本问题）{detail}",
+            status.code()
+        ));
+    }
+    for line in npm_out.lock().unwrap().iter() {
+        if !line.trim().is_empty() {
+            on_line(line);
+        }
     }
 
     let version = installed_version(&staging)?;

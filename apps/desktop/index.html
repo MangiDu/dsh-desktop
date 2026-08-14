@@ -30,6 +30,7 @@
         </div>
         <h1>dsh desktop</h1>
         <p class="hint" id="splash-hint">正在启动 dsh…</p>
+        <div class="progress hidden" id="splash-progress" aria-hidden="true"></div>
       </main>
       <main class="panel hidden" id="panel-error">
         <h1>dsh 未能启动</h1>
@@ -98,6 +99,7 @@
       </main>
       <main class="panel hidden" id="panel-update">
         <h1>dsh 更新</h1>
+        <div class="progress hidden" id="update-progress" aria-hidden="true"></div>
         <p class="hint" id="update-status">
           <span class="spinner sm hidden" id="update-spinner" aria-hidden="true"></span>
           <span id="update-status-text">正在检查…</span>
