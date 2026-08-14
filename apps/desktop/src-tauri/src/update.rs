@@ -84,6 +84,46 @@ pub struct HistoryEntry {
 }
 
 const HISTORY_FILE: &str = "update-history.json";
+const CHECK_CACHE_FILE: &str = "update-check-cache.json";
+const CHECK_FRESH_SECS: u64 = 1800;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CheckCache {
+    at: u64,
+    current: String,
+    latest: String,
+    updatable: bool,
+}
+
+fn check_cache_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    let data = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("无法解析应用数据目录: {e}"))?;
+    Ok(data.join(CHECK_CACHE_FILE))
+}
+
+fn read_check_cache(app: &AppHandle) -> Option<CheckCache> {
+    let path = check_cache_path(app).ok()?;
+    let text = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+fn write_check_cache(app: &AppHandle, check: &Check) {
+    let Ok(path) = check_cache_path(app) else {
+        return;
+    };
+    let cache = CheckCache {
+        at: unix_now(),
+        current: check.current.clone(),
+        latest: check.latest.clone(),
+        updatable: check.updatable,
+    };
+    if let Ok(json) = serde_json::to_string_pretty(&cache) {
+        let _ = std::fs::write(path, json);
+    }
+}
 
 fn unix_now() -> u64 {
     SystemTime::now()
@@ -166,12 +206,28 @@ pub fn update_switch(
 
 /// Panel command: compare installed vs registry.
 #[tauri::command]
-pub fn update_check(app: AppHandle) -> Result<Check, String> {
+pub fn update_check(app: AppHandle, force: Option<bool>) -> Result<Check, String> {
     let settings = crate::runtime::load_settings(&app);
+    let now = unix_now();
+    let fresh = settings
+        .last_check
+        .is_some_and(|lc| now.saturating_sub(lc) < CHECK_FRESH_SECS);
+    // Serve the cached result instantly for panel switches; 重新检查 forces
+    // a live registry query.
+    if force != Some(true) && fresh {
+        if let Some(cache) = read_check_cache(&app) {
+            return Ok(Check {
+                current: cache.current,
+                latest: cache.latest,
+                updatable: cache.updatable,
+            });
+        }
+    }
     let result = check(&app, &settings)?;
     let mut saved = settings;
-    saved.last_check = Some(unix_now());
+    saved.last_check = Some(now);
     let _ = crate::runtime::save_settings(&app, &saved);
+    write_check_cache(&app, &result);
     Ok(result)
 }
 
@@ -265,8 +321,12 @@ pub fn spawn_scheduler(app: AppHandle, shared: Arc<crate::dsh::Shared>) {
         saved.last_check = Some(now);
         let _ = crate::runtime::save_settings(&app, &saved);
         match check(&app, &settings) {
-            Ok(info) if info.updatable => auto_install(&app, &shared, &settings, &info),
-            Ok(_) => {}
+            Ok(info) => {
+                write_check_cache(&app, &info);
+                if info.updatable {
+                    auto_install(&app, &shared, &settings, &info);
+                }
+            }
             Err(e) => println!("[dsh] auto-update check failed: {e}"),
         }
     });

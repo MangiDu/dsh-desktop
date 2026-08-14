@@ -212,12 +212,12 @@ async function loadHistory() {
   }
 }
 
-async function runUpdateCheck() {
-  $("update-status").textContent = "正在检查…";
+async function runUpdateCheck(force = false) {
+  $("update-status").textContent = force ? "正在重新检查…" : "正在检查…";
   $("btn-update-apply").classList.add("hidden");
   $("btn-update-restart").classList.add("hidden");
   try {
-    const info = await invoke<UpdateCheck>("update_check");
+    const info = await invoke<UpdateCheck>("update_check", force ? { force: true } : {});
     if (info.updatable) {
       $("update-status").textContent =
         `发现新版本 ${info.latest}（当前 ${info.current}）`;
@@ -232,6 +232,10 @@ async function runUpdateCheck() {
     $("update-status").textContent = `检查失败：${err}`;
   }
 }
+
+$("btn-update-recheck").addEventListener("click", () => {
+  void runUpdateCheck(true);
+});
 
 $("btn-update-apply").addEventListener("click", async () => {
   $("update-status").textContent = "正在安装，请稍候…";

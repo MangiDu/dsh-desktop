@@ -438,13 +438,16 @@ fn on_ready(app: &AppHandle, shared: &Arc<Shared>, id: u64, port: u16) {
                                 {
                                     *intent = Some("close-confirm".to_string());
                                 }
+                                let _ = app.emit_to(SPLASH_LABEL, "dsh://ui-intent", "close-confirm");
                                 crate::dsh::ensure_splash(&app);
                             }
                         }
                     }
                 });
+                // Hide (not destroy) the shell window: menu panels reopen it
+                // instantly instead of reloading the page.
                 if let Some(s) = app2.get_webview_window(SPLASH_LABEL) {
-                    let _ = s.close();
+                    let _ = s.hide();
                 }
             }
             Err(e) => {
