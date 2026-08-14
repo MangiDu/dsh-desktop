@@ -41,14 +41,15 @@ struct Envelope {
 }
 
 /// macOS system notifications via UNUserNotificationCenter (the modern
-/// API — notification-center banners, non-blocking, web-notification-like).
-/// The in-app toast banner is the guaranteed channel on every event; the
-/// system banner is best-effort, attempted only when the live authorization
-/// status allows it. Every decision is appended to `appdata/logs/notify.log`
-/// so notification failures are diagnosable without a debugger.
+/// API — the top-right Notification Center banner, non-blocking). The
+/// system banner is the PRIMARY channel; the in-app toast banner is the
+/// permission-free fallback (denied / not determined / delivery error).
+/// Every decision is appended to `appdata/logs/notify.log` so notification
+/// failures are diagnosable without a debugger.
 #[cfg(target_os = "macos")]
 pub mod sysnotify {
     use std::ptr::NonNull;
+    use std::sync::Arc;
 
     use block2::RcBlock;
     use objc2::runtime::Bool;
@@ -156,14 +157,25 @@ pub mod sysnotify {
         center.addNotificationRequest_withCompletionHandler(&request, Some(&on_error));
     }
 
-    /// Best-effort system banner keyed off the LIVE authorization status:
-    /// authorized/provisional → send (delivery errors are logged);
-    /// notDetermined → re-request permission (the startup request may have
-    /// run before the app was fully active, which macOS can silently drop);
-    /// denied/unknown → skip and log. The in-app toast already covered the
-    /// event, so this channel is purely additive.
-    pub fn notify_if_authorized(app: &tauri::AppHandle, title: &str, body: &str) {
+    /// System banner keyed off the LIVE authorization status — the system
+    /// notification (the top-right Notification Center banner) is the
+    /// PRIMARY channel; the custom toast is only the fallback:
+    /// authorized/provisional → system banner only (a delivery error falls
+    /// back to the toast);
+    /// notDetermined → re-request permission on the main thread (the
+    /// startup request may have run before the app was fully active, and
+    /// macOS silently answers granted=false off the main thread) plus a
+    /// toast fallback for this event;
+    /// denied/unknown → toast fallback only.
+    pub fn notify_system_or_toast(
+        app: &tauri::AppHandle,
+        shared: &Arc<crate::dsh::Shared>,
+        title: &str,
+        body: &str,
+        sticky: bool,
+    ) {
         let app = app.clone();
+        let shared = shared.clone();
         let title = title.to_string();
         let body = body.to_string();
         with_status(move |status| {
@@ -173,33 +185,49 @@ pub mod sysnotify {
             );
             match status {
                 2 | 3 => {
-                    let app_err = app.clone();
+                    let app2 = app.clone();
+                    let shared2 = shared.clone();
+                    let t2 = title.clone();
+                    let b2 = body.clone();
                     let on_error = RcBlock::new(move |err: *mut NSError| {
                         let msg = unsafe { err.as_ref() }
                             .map(|e| e.localizedDescription().to_string())
-                            .unwrap_or_else(|| "unknown".to_string());
-                        super::diag(&app_err, &format!("sysnotify: delivery error: {msg}"));
+                            .unwrap_or_default();
+                        super::diag(&app2, &format!("sysnotify: delivery error: {msg:?}, falling back to toast"));
+                        super::toast(&app2, &shared2, &t2, &b2, sticky);
                     });
+                    // Posting is safe from this queue (verified live: the
+                    // system banner displays); only the authorization
+                    // REQUEST had to be pinned to the main thread.
                     send(&title, &body, on_error);
                 }
                 0 => {
                     super::diag(&app, "sysnotify: notDetermined, re-requesting authorization");
                     request_permission(&app);
+                    super::toast(&app, &shared, &title, &body, sticky);
                 }
-                _ => {}
+                _ => {
+                    super::toast(&app, &shared, &title, &body, sticky);
+                }
             }
         });
     }
 }
 
-/// Event entry point: the in-app toast banner always shows (guaranteed,
-/// permission-free channel); on macOS a best-effort system banner is added
-/// on top when the notification authorization allows it.
+/// Event entry point: on macOS the system notification (the top-right
+/// Notification Center banner) is the primary channel, with the in-app toast
+/// as the permission-free fallback; on other platforms the toast is the only
+/// channel.
 pub fn notify_event(app: &AppHandle, shared: &Arc<crate::dsh::Shared>, title: &str, body: &str, sticky: bool) {
     diag(app, &format!("notify: {title} :: {body}"));
-    toast(app, shared, title, body, sticky);
     #[cfg(target_os = "macos")]
-    sysnotify::notify_if_authorized(app, title, body);
+    {
+        sysnotify::notify_system_or_toast(app, shared, title, body, sticky);
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        toast(app, shared, title, body, sticky);
+    }
 }
 
 /// Best-effort persistent diagnostic line: `println!` plus an append to
