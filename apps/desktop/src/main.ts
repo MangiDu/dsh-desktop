@@ -213,24 +213,35 @@ async function loadHistory() {
 }
 
 async function runUpdateCheck(force = false) {
-  $("update-status").textContent = force ? "正在重新检查…" : "正在检查…";
+  setUpdateBusy(true, force ? "正在重新检查…" : "正在检查…");
   $("btn-update-apply").classList.add("hidden");
   $("btn-update-restart").classList.add("hidden");
   try {
     const info = await invoke<UpdateCheck>("update_check", force ? { force: true } : {});
     if (info.updatable) {
-      $("update-status").textContent =
+      $("update-status-text").textContent =
         `发现新版本 ${info.latest}（当前 ${info.current}）`;
       $("btn-update-apply").classList.remove("hidden");
     } else if (info.current === info.latest) {
-      $("update-status").textContent = `已是最新版本：${info.current}`;
+      $("update-status-text").textContent = `已是最新版本：${info.current}`;
     } else {
-      $("update-status").textContent =
+      $("update-status-text").textContent =
         `当前 ${info.current}（自定义 DSH_BIN，不适用更新），最新 ${info.latest}`;
     }
   } catch (err) {
-    $("update-status").textContent = `检查失败：${err}`;
+    $("update-status-text").textContent = `检查失败：${err}`;
+  } finally {
+    setUpdateBusy(false);
   }
+}
+
+function setUpdateBusy(busy: boolean, text?: string) {
+  const spinner = $("update-spinner");
+  const btn = $("btn-update-recheck") as HTMLButtonElement;
+  spinner.classList.toggle("hidden", !busy);
+  btn.disabled = busy;
+  btn.textContent = busy ? "检查中…" : "重新检查";
+  if (text !== undefined) $("update-status-text").textContent = text;
 }
 
 $("btn-update-recheck").addEventListener("click", () => {

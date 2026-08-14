@@ -97,7 +97,10 @@
       </main>
       <main class="panel hidden" id="panel-update">
         <h1>dsh 更新</h1>
-        <p class="hint" id="update-status">正在检查…</p>
+        <p class="hint" id="update-status">
+          <span class="spinner sm hidden" id="update-spinner" aria-hidden="true"></span>
+          <span id="update-status-text">正在检查…</span>
+        </p>
         <pre id="update-log" class="log placeholder-text hidden">执行后日志将在此显示</pre>
         <div class="actions">
           <button id="btn-update-apply" class="primary hidden" type="button">立即更新</button>
