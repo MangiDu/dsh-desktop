@@ -122,8 +122,20 @@ fn dsh_plugin(app: AppHandle, args: Vec<String>) -> Result<(), String> {
 /// Local-path specs are a first-class `dsh plugin` input (pnpm link:); the
 /// reconcile step still wires the package into dsh.profile.bundles.
 #[tauri::command]
-fn dsh_plugin_offline(app: AppHandle, kind: String) -> Result<(), String> {
-    let target = match kind.as_str() {
+async fn dsh_plugin_offline(app: AppHandle, kind: String) -> Result<(), String> {
+    // The blocking pickers must not run on the main thread (deadlock);
+    // whole flow on a blocking worker.
+    let target = tauri::async_runtime::spawn_blocking(move || offline_install_target(&app, &kind))
+        .await
+        .map_err(|e| format!("离线安装任务执行失败: {e}"))??;
+    if target.is_none() {
+        return Ok(()); // picker cancelled
+    }
+    Ok(())
+}
+
+fn offline_install_target(app: &AppHandle, kind: &str) -> Result<Option<std::path::PathBuf>, String> {
+    let target = match kind {
         "zip" => {
             let Some(file) = app
                 .dialog()
@@ -131,7 +143,7 @@ fn dsh_plugin_offline(app: AppHandle, kind: String) -> Result<(), String> {
                 .add_filter("插件 zip 包", &["zip"])
                 .blocking_pick_file()
             else {
-                return Ok(()); // cancelled
+                return Ok(None); // cancelled
             };
             let zip_path = file
                 .into_path()
@@ -157,7 +169,7 @@ fn dsh_plugin_offline(app: AppHandle, kind: String) -> Result<(), String> {
         }
         "dir" => {
             let Some(folder) = app.dialog().file().blocking_pick_folder() else {
-                return Ok(()); // cancelled
+                return Ok(None); // cancelled
             };
             let path = folder
                 .into_path()
@@ -171,7 +183,8 @@ fn dsh_plugin_offline(app: AppHandle, kind: String) -> Result<(), String> {
         "dsh://plugin-log",
         format!("离线安装: dsh plugin --profile web add {target_str} --offline"),
     );
-    run_plugin_args(&app, vec!["add".to_string(), target_str, "--offline".to_string()])
+    run_plugin_args(app, vec!["add".to_string(), target_str, "--offline".to_string()])?;
+    Ok(Some(target))
 }
 
 /// The folder that contains the plugin's package.json — the picked/extracted

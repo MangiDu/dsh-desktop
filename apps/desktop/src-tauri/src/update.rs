@@ -7,10 +7,12 @@
 //! `current` pointer; the running version is untouched), streaming progress
 //! lines to the panel → the panel offers 立即重启 (dsh_restart).
 
+use std::io::{BufReader, Read};
+use std::process::Stdio;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
@@ -48,22 +50,45 @@ pub fn check(app: &AppHandle, settings: &crate::runtime::Settings) -> Result<Che
     let cache = data.join(crate::runtime::NPM_CACHE_DIR);
     let _ = std::fs::create_dir_all(&cache);
 
-    let out = std::process::Command::new("npm")
+    let mut child = std::process::Command::new("npm")
         .args(["view", "@deepseek-ai/dsh", "version"])
         .args(["--registry", &settings.registry])
         .args(["--cache", cache.to_str().unwrap_or_default()])
         .args(["--json"])
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|e| format!("执行 npm view 失败（npm 可用性）: {e}"))?;
-    if !out.status.success() {
-        return Err(format!(
-            "查询 registry 失败: {}",
-            String::from_utf8_lossy(&out.stderr).trim().to_string()
-        ));
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(st)) => break st,
+            Ok(None) => {
+                if started.elapsed() > Duration::from_secs(20) {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err("查询 registry 超时（20 秒），请检查网络或 registry 配置".to_string());
+                }
+            }
+            Err(e) => return Err(format!("npm view 执行失败: {e}")),
+        }
+        thread::sleep(Duration::from_millis(200));
+    };
+    if !status.success() {
+        let mut err_text = String::new();
+        if let Some(err) = stderr {
+            let _ = BufReader::new(err).read_to_string(&mut err_text);
+        }
+        return Err(format!("查询 registry 失败: {}", err_text.trim()));
     }
     // `npm view --json` prints a JSON string literal, e.g. "0.1.0-rc.6"
-    let raw = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    let latest = raw.trim_matches('"').to_string();
+    let mut raw = String::new();
+    if let Some(out) = stdout {
+        let _ = BufReader::new(out).read_to_string(&mut raw);
+    }
+    let latest = raw.trim().trim_matches('"').to_string();
 
     let updatable = match (semver::Version::parse(&current), semver::Version::parse(&latest)) {
         (Ok(c), Ok(l)) => l > c,
@@ -196,44 +221,56 @@ pub fn update_list_versions(app: AppHandle) -> Vec<crate::runtime::VersionInfo> 
 
 /// Rollback entry: point `current` at an installed version and restart dsh.
 #[tauri::command]
-pub fn update_switch(
+pub async fn update_switch(
     app: AppHandle,
     state: tauri::State<'_, crate::AppState>,
     version: String,
 ) -> Result<(), String> {
-    let previous = crate::runtime::current_version(&app).unwrap_or_else(|| "未知".to_string());
-    crate::runtime::switch_version(&app, &version)?;
-    crate::update::record_update(&app, &previous, &version, "switched", None);
-    let _ = crate::dsh::start(&app, &state.0);
-    Ok(())
+    let shared = state.0.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let previous =
+            crate::runtime::current_version(&app).unwrap_or_else(|| "未知".to_string());
+        crate::runtime::switch_version(&app, &version)?;
+        crate::update::record_update(&app, &previous, &version, "switched", None);
+        let _ = crate::dsh::start(&app, &shared);
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("切换任务执行失败: {e}"))?
 }
 
 /// Panel command: compare installed vs registry.
 #[tauri::command]
-pub fn update_check(app: AppHandle, force: Option<bool>) -> Result<Check, String> {
-    let settings = crate::runtime::load_settings(&app);
-    let now = unix_now();
-    let fresh = settings
-        .last_check
-        .is_some_and(|lc| now.saturating_sub(lc) < CHECK_FRESH_SECS);
-    // Serve the cached result instantly for panel switches; 重新检查 forces
-    // a live registry query.
-    if force != Some(true) && fresh {
-        if let Some(cache) = read_check_cache(&app) {
-            return Ok(Check {
-                current: cache.current,
-                latest: cache.latest,
-                updatable: cache.updatable,
-                cached: true,
-            });
+pub async fn update_check(app: AppHandle, force: Option<bool>) -> Result<Check, String> {
+    // Blocking commands run inline on the MAIN thread in Tauri; a live npm
+    // view here would freeze the whole app. Run it on a blocking worker.
+    tauri::async_runtime::spawn_blocking(move || {
+        let settings = crate::runtime::load_settings(&app);
+        let now = unix_now();
+        let fresh = settings
+            .last_check
+            .is_some_and(|lc| now.saturating_sub(lc) < CHECK_FRESH_SECS);
+        // Serve the cached result instantly for panel switches; 重新检查
+        // forces a live registry query.
+        if force != Some(true) && fresh {
+            if let Some(cache) = read_check_cache(&app) {
+                return Ok(Check {
+                    current: cache.current,
+                    latest: cache.latest,
+                    updatable: cache.updatable,
+                    cached: true,
+                });
+            }
         }
-    }
-    let result = check(&app, &settings)?;
-    let mut saved = settings;
-    saved.last_check = Some(now);
-    let _ = crate::runtime::save_settings(&app, &saved);
-    write_check_cache(&app, &result);
-    Ok(result)
+        let result = check(&app, &settings)?;
+        let mut saved = settings;
+        saved.last_check = Some(now);
+        let _ = crate::runtime::save_settings(&app, &saved);
+        write_check_cache(&app, &result);
+        Ok(result)
+    })
+    .await
+    .map_err(|e| format!("检查任务执行失败: {e}"))?
 }
 
 /// Panel command: install the newest version in the background. Progress
