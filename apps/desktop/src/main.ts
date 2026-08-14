@@ -142,7 +142,7 @@ listen<number>("dsh://plugin-done", (event) => {
 });
 
 // Update panel (supplementary requirement #3).
-type UpdateCheck = { current: string; latest: string; updatable: boolean };
+type UpdateCheck = { current: string; latest: string; updatable: boolean; cached: boolean };
 type UpdateDone = { ok: boolean; version: string; error: string | null };
 type VersionInfo = { version: string; active: boolean; mtime: number };
 type HistoryEntry = { at: number; from: string; to: string; result: string; error: string | null };
@@ -180,11 +180,11 @@ async function loadVersions() {
         btn.textContent = "切换";
         btn.addEventListener("click", () => {
           void (async () => {
-            $("update-status").textContent = `切换到 v${v.version}，重启中…`;
+            $("update-status-text").textContent = `切换到 v${v.version}，重启中…`;
             try {
               await invoke("update_switch", { version: v.version });
             } catch (err) {
-              $("update-status").textContent = `切换失败：${err}`;
+              $("update-status-text").textContent = `切换失败：${err}`;
             }
           })();
         });
@@ -193,7 +193,7 @@ async function loadVersions() {
       list.appendChild(row);
     }
   } catch (err) {
-    $("update-status").textContent = `版本列表加载失败：${err}`;
+    $("update-status-text").textContent = `版本列表加载失败：${err}`;
   }
 }
 
@@ -222,15 +222,16 @@ async function runUpdateCheck(force = false) {
   $("btn-update-restart").classList.add("hidden");
   try {
     const info = await invoke<UpdateCheck>("update_check", force ? { force: true } : {});
+    const src = info.cached ? "（缓存）" : "（实时）";
     if (info.updatable) {
       $("update-status-text").textContent =
-        `发现新版本 ${info.latest}（当前 ${info.current}）`;
+        `发现新版本 ${info.latest}（当前 ${info.current}）${src}`;
       $("btn-update-apply").classList.remove("hidden");
     } else if (info.current === info.latest) {
-      $("update-status-text").textContent = `已是最新版本：${info.current}`;
+      $("update-status-text").textContent = `已是最新版本：${info.current} ${src}`;
     } else {
       $("update-status-text").textContent =
-        `当前 ${info.current}（自定义 DSH_BIN，不适用更新），最新 ${info.latest}`;
+        `当前 ${info.current}（自定义 DSH_BIN，不适用更新），最新 ${info.latest} ${src}`;
     }
   } catch (err) {
     $("update-status-text").textContent = `检查失败：${err}`;
@@ -245,6 +246,8 @@ function setUpdateBusy(busy: boolean, text?: string) {
   spinner.classList.toggle("hidden", !busy);
   btn.disabled = busy;
   btn.textContent = busy ? "检查中…" : "重新检查";
+  const status = $("update-status");
+  status.classList.toggle("busy", busy);
   if (text !== undefined) $("update-status-text").textContent = text;
 }
 
@@ -253,7 +256,7 @@ $("btn-update-recheck").addEventListener("click", () => {
 });
 
 $("btn-update-apply").addEventListener("click", async () => {
-  $("update-status").textContent = "正在安装，请稍候…";
+  $("update-status-text").textContent = "正在安装，请稍候…";
   $("btn-update-apply").classList.add("hidden");
   $("update-log").classList.remove("hidden");
   try {
@@ -275,13 +278,13 @@ listen<string>("dsh://update-line", (event) => {
 listen<UpdateDone>("dsh://update-done", (event) => {
   const done = event.payload;
   if (done.ok) {
-    $("update-status").textContent = `v${done.version} 已就绪`;
+    $("update-status-text").textContent = `v${done.version} 已就绪`;
     appendLog($("update-log"), "✓ 安装完成");
     $("btn-update-restart").classList.remove("hidden");
     void loadVersions();
     void loadHistory();
   } else {
-    $("update-status").textContent = "更新未完成";
+    $("update-status-text").textContent = "更新未完成";
     if (done.error) appendLog($("update-log"), `✗ ${done.error}`);
     $("btn-update-apply").classList.remove("hidden");
   }

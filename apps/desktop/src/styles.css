@@ -88,6 +88,11 @@ h1 {
   }
 }
 
+#update-status.busy {
+  color: #6f8bff;
+  font-weight: 500;
+}
+
 .spinner.sm {
   width: 14px;
   height: 14px;

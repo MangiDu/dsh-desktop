@@ -22,6 +22,9 @@ pub struct Check {
     pub current: String,
     pub latest: String,
     pub updatable: bool,
+    /// Whether this result came from the short-lived cache.
+    #[serde(default)]
+    pub cached: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -70,6 +73,7 @@ pub fn check(app: &AppHandle, settings: &crate::runtime::Settings) -> Result<Che
         current,
         latest,
         updatable,
+        cached: false,
     })
 }
 
@@ -220,6 +224,7 @@ pub fn update_check(app: AppHandle, force: Option<bool>) -> Result<Check, String
                 current: cache.current,
                 latest: cache.latest,
                 updatable: cache.updatable,
+                cached: true,
             });
         }
     }
