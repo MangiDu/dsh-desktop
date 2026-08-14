@@ -392,7 +392,7 @@ fn auto_install(
     match result {
         Ok(version) => {
             record_update(app, &info.current, &version, "ok", None);
-            crate::listener::toast(
+            crate::listener::notify_event(
                 app,
                 shared,
                 "dsh 更新",
@@ -401,7 +401,7 @@ fn auto_install(
         }
         Err(e) => {
             record_update(app, &info.current, &info.latest, "failed", Some(e.clone()));
-            crate::listener::toast(app, shared, "dsh 更新", &format!("自动更新失败：{e}"));
+            crate::listener::notify_event(app, shared, "dsh 更新", &format!("自动更新失败：{e}"));
         }
     }
     shared.install_busy.store(false, Ordering::SeqCst);

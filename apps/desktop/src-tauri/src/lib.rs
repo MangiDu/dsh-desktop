@@ -380,6 +380,11 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             apply_dock_icon();
 
+            // System notification permission (macOS prompts once; the toast
+            // banner stays as the fallback until/unless granted).
+            #[cfg(target_os = "macos")]
+            listener::sysnotify::request_permission();
+
             // Persist default settings on first run.
             let settings = runtime::load_settings(app.handle());
             let _ = runtime::save_settings(app.handle(), &settings);

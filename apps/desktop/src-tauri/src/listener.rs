@@ -40,6 +40,67 @@ struct Envelope {
     payload: Frame,
 }
 
+/// macOS system notifications via UNUserNotificationCenter (the modern
+/// API — notification-center banners, non-blocking, web-notification-like).
+/// The toast window remains the fallback when permission is not granted
+/// (e.g. before the first permission prompt is answered).
+#[cfg(target_os = "macos")]
+pub mod sysnotify {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use block2::RcBlock;
+    use objc2::runtime::Bool;
+    use objc2_foundation::{NSError, NSString};
+    use objc2_user_notifications::{
+        UNAuthorizationOptions, UNMutableNotificationContent, UNNotificationRequest,
+        UNUserNotificationCenter,
+    };
+
+    static GRANTED: AtomicBool = AtomicBool::new(false);
+
+    pub fn request_permission() {
+        let center = UNUserNotificationCenter::currentNotificationCenter();
+        let handler = RcBlock::new(move |granted: Bool, _err: *mut NSError| {
+            GRANTED.store(granted.as_bool(), Ordering::SeqCst);
+            println!("[dsh] system notification permission: {}", granted.as_bool());
+        });
+        center.requestAuthorizationWithOptions_completionHandler(
+            UNAuthorizationOptions::Alert | UNAuthorizationOptions::Sound | UNAuthorizationOptions::Badge,
+            &handler,
+        );
+    }
+
+    pub fn granted() -> bool {
+        GRANTED.load(Ordering::SeqCst)
+    }
+
+    pub fn send(title: &str, body: &str) {
+        let center = UNUserNotificationCenter::currentNotificationCenter();
+        let content = UNMutableNotificationContent::new();
+        content.setTitle(&NSString::from_str(title));
+        content.setBody(&NSString::from_str(body));
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let id = NSString::from_str(&format!("dsh-toast-{nanos}"));
+        let request = UNNotificationRequest::requestWithIdentifier_content_trigger(&id, &content, None);
+        center.addNotificationRequest_withCompletionHandler(&request, None);
+    }
+}
+
+/// Event entry point: system notification when permission is granted,
+/// the in-app toast banner otherwise.
+pub fn notify_event(app: &AppHandle, shared: &Arc<crate::dsh::Shared>, title: &str, body: &str) {
+    #[cfg(target_os = "macos")]
+    if sysnotify::granted() {
+        println!("[dsh] system notify: {title} :: {body}");
+        sysnotify::send(title, body);
+        return;
+    }
+    toast(app, shared, title, body);
+}
+
 pub const TOAST_LABEL: &str = "toast";
 static TOAST_SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -131,7 +192,7 @@ pub fn handle_frame(app: &AppHandle, shared: &Arc<crate::dsh::Shared>, kind: &st
                 .map(|r| format!("（{r}）"))
                 .unwrap_or_default();
             badge(app, Some(1));
-            toast(
+            notify_event(
                 app,
                 shared,
                 "dsh 请求权限",
@@ -145,7 +206,7 @@ pub fn handle_frame(app: &AppHandle, shared: &Arc<crate::dsh::Shared>, kind: &st
                 .map(|a| a.len())
                 .unwrap_or(1);
             badge(app, Some(1));
-            toast(
+            notify_event(
                 app,
                 shared,
                 "dsh 需要你的回答",
@@ -158,7 +219,7 @@ pub fn handle_frame(app: &AppHandle, shared: &Arc<crate::dsh::Shared>, kind: &st
         "host/agent-error" => {
             let msg = extra.get("message").and_then(|v| v.as_str()).unwrap_or("未知错误");
             badge(app, Some(1));
-            toast(app, shared, "dsh 会话出错", msg);
+            notify_event(app, shared, "dsh 会话出错", msg);
         }
         "stream/error" => {
             let msg = extra
@@ -166,7 +227,7 @@ pub fn handle_frame(app: &AppHandle, shared: &Arc<crate::dsh::Shared>, kind: &st
                 .and_then(|v| v.get("message"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("未知错误");
-            toast(app, shared, "dsh 事件流错误", msg);
+            notify_event(app, shared, "dsh 事件流错误", msg);
         }
         _ => {}
     }
