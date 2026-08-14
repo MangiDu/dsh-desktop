@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>dsh</title>
+    <style>
+      html, body {
+        margin: 0;
+        height: 100%;
+        background: transparent;
+        font-family: -apple-system, "PingFang SC", "Segoe UI", Roboto, sans-serif;
+        color: #e8eaf2;
+        overflow: hidden;
+        user-select: none;
+        cursor: pointer;
+      }
+      #toast {
+        margin: 12px;
+        padding: 14px 16px;
+        border-radius: 12px;
+        background: rgba(24, 26, 38, 0.96);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+        display: flex;
+        gap: 12px;
+        align-items: flex-start;
+      }
+      .dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: #4d7cfe;
+        margin-top: 5px;
+        flex-shrink: 0;
+        box-shadow: 0 0 10px rgba(77, 124, 254, 0.8);
+      }
+      .title {
+        font-size: 13px;
+        font-weight: 600;
+        margin-bottom: 3px;
+      }
+      .body {
+        font-size: 12px;
+        color: #aab0c4;
+        line-height: 1.5;
+        word-break: break-all;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="toast">
+      <div class="dot"></div>
+      <div>
+        <div class="title" id="toast-title"></div>
+        <div class="body" id="toast-body"></div>
+      </div>
+    </div>
+    <script type="module" src="/src/toast.ts"></script>
+  </body>
+</html>

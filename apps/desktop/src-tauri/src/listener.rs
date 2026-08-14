@@ -15,15 +15,14 @@
 //! - `host/agent-error`  → agent error                    (badge + notification + focus)
 //! - `stream/error`      → stream failure                 (notification)
 
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::StreamExt;
+use serde::Serialize;
 use serde_json::Value;
-use tauri::{AppHandle, Manager};
-use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
-use tauri_plugin_notification::NotificationExt;
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 pub const MUX_PATH: &str = "/api/events.mux";
 pub const HOST_PATH: &str = "/api/events.host";
@@ -41,44 +40,75 @@ struct Envelope {
     payload: Frame,
 }
 
-pub fn notify(app: &AppHandle, title: &str, body: &str) {
-    println!("[dsh] notify: {title} :: {body}");
-    let _ = app.notification().builder().title(title).body(body).show();
+pub const TOAST_LABEL: &str = "toast";
+static TOAST_SEQ: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Clone, Serialize)]
+struct ToastPayload {
+    title: String,
+    body: String,
+}
+
+/// Non-blocking, web-notification-style banner in the top-right corner:
+/// always-on-top but never steals focus, auto-hides after 6s, and focuses
+/// the main window only when the user clicks it.
+pub fn toast(app: &AppHandle, title: &str, body: &str) {
+    println!("[dsh] alert: {title} :: {body}");
+    ensure_toast(app);
+    let seq = TOAST_SEQ.fetch_add(1, Ordering::SeqCst) + 1;
+    let _ = app.emit_to(
+        TOAST_LABEL,
+        "dsh://toast",
+        ToastPayload {
+            title: title.to_string(),
+            body: body.to_string(),
+        },
+    );
+    let app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(6));
+        if TOAST_SEQ.load(Ordering::SeqCst) != seq {
+            return; // superseded by a newer toast
+        }
+        if let Some(w) = app.get_webview_window(TOAST_LABEL) {
+            let _ = w.hide();
+        }
+    });
+}
+
+fn ensure_toast(app: &AppHandle) {
+    if app.get_webview_window(TOAST_LABEL).is_some() {
+        return;
+    }
+    let app = app.clone();
+    let _ = app.clone().run_on_main_thread(move || {
+        let (tw, th) = (400.0f64, 128.0f64);
+        let (mw, _mh) = app
+            .primary_monitor()
+            .ok()
+            .flatten()
+            .map(|m| (m.size().width as f64, m.size().height as f64))
+            .unwrap_or((1920.0, 1080.0));
+        let built = WebviewWindowBuilder::new(&app, TOAST_LABEL, WebviewUrl::App("toast.html".into()))
+            .title("dsh desktop")
+            .inner_size(tw, th)
+            .position(mw - tw - 24.0, 24.0)
+            .decorations(false)
+            .resizable(false)
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .focused(false)
+            .background_color(tauri::utils::config::Color(20, 22, 32, 255))
+            .build();
+        if let Err(e) = built {
+            eprintln!("[dsh] create toast window failed: {e}");
+        }
+    });
 }
 
 fn badge(app: &AppHandle, count: Option<i64>) {
     if let Some(w) = app.get_webview_window(crate::dsh::MAIN_LABEL) {
         let _ = w.set_badge_count(count);
-    }
-}
-
-/// Modal popup for critical events demanding immediate user action.
-/// Native notifications are silently dropped for unbundled dev binaries
-/// (macOS NSUserNotification without an app bundle), so critical events
-/// go through a native dialog instead — guaranteed visible everywhere.
-static ALERT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-fn alert(app: &AppHandle, title: &str, body: &str) {
-    println!("[dsh] alert: {title} :: {body}");
-    let app = app.clone();
-    let title = title.to_string();
-    let body = body.to_string();
-    tauri::async_runtime::spawn_blocking(move || {
-        let _guard = ALERT_LOCK.lock();
-        let _ = app
-            .dialog()
-            .message(body)
-            .title(title)
-            .kind(MessageDialogKind::Warning)
-            .blocking_show();
-    });
-}
-
-fn focus_main(app: &AppHandle) {
-    if let Some(w) = app.get_webview_window(crate::dsh::MAIN_LABEL) {
-        let _ = w.show();
-        let _ = w.unminimize();
-        let _ = w.set_focus();
     }
 }
 
@@ -96,8 +126,7 @@ pub fn handle_frame(app: &AppHandle, shared: &Arc<crate::dsh::Shared>, kind: &st
                 .map(|r| format!("（{r}）"))
                 .unwrap_or_default();
             badge(app, Some(1));
-            focus_main(app);
-            alert(
+            toast(
                 app,
                 "dsh 请求权限",
                 &format!("dsh 想要执行「{tool}」{reason}，请在窗口中批准或拒绝。"),
@@ -110,8 +139,7 @@ pub fn handle_frame(app: &AppHandle, shared: &Arc<crate::dsh::Shared>, kind: &st
                 .map(|a| a.len())
                 .unwrap_or(1);
             badge(app, Some(1));
-            focus_main(app);
-            alert(
+            toast(
                 app,
                 "dsh 需要你的回答",
                 &format!("dsh 向你提出了 {n} 个问题，请在窗口中回答。"),
@@ -123,8 +151,7 @@ pub fn handle_frame(app: &AppHandle, shared: &Arc<crate::dsh::Shared>, kind: &st
         "host/agent-error" => {
             let msg = extra.get("message").and_then(|v| v.as_str()).unwrap_or("未知错误");
             badge(app, Some(1));
-            focus_main(app);
-            notify(app, "dsh 会话出错", msg);
+            toast(app, "dsh 会话出错", msg);
         }
         "stream/error" => {
             let msg = extra
@@ -132,7 +159,7 @@ pub fn handle_frame(app: &AppHandle, shared: &Arc<crate::dsh::Shared>, kind: &st
                 .and_then(|v| v.get("message"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("未知错误");
-            notify(app, "dsh 事件流错误", msg);
+            toast(app, "dsh 事件流错误", msg);
         }
         _ => {}
     }

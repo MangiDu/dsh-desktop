@@ -209,6 +209,15 @@ fn resolve_plugin_root(root: &std::path::Path) -> Result<std::path::PathBuf, Str
     }
 }
 
+/// Toast banner click: focus the main window and dismiss the toast.
+#[tauri::command]
+fn toast_clicked(app: AppHandle) {
+    show_main_or_splash(&app);
+    if let Some(w) = app.get_webview_window(listener::TOAST_LABEL) {
+        let _ = w.hide();
+    }
+}
+
 /// The dsh data directory (DSH_HOME; ~/.dsh by default) — same value the
 /// dsh child resolves.
 #[tauri::command]
@@ -349,7 +358,8 @@ pub fn run() {
             close_choice,
             dsh_plugin_offline,
             runtime_reset,
-            dsh_home_info
+            dsh_home_info,
+            toast_clicked
         ])
         .setup(|app| {
             let shared = app.state::<AppState>().0.clone();
