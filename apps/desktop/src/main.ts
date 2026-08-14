@@ -147,11 +147,14 @@ type UpdateDone = { ok: boolean; version: string; error: string | null };
 type VersionInfo = { version: string; active: boolean; mtime: number };
 type HistoryEntry = { at: number; from: string; to: string; result: string; error: string | null };
 
+let versionsSeq = 0;
 async function loadVersions() {
+  const seq = ++versionsSeq;
   const list = $("version-list");
   list.textContent = "";
   try {
     const versions = await invoke<VersionInfo[]>("update_list_versions");
+    if (seq !== versionsSeq) return; // a newer load superseded this one
     if (versions.length === 0) {
       const empty = document.createElement("p");
       empty.className = "hint";
@@ -160,6 +163,7 @@ async function loadVersions() {
       return;
     }
     for (const v of versions) {
+      if (seq !== versionsSeq) return; // superseded mid-render
       const row = document.createElement("div");
       row.className = "version-row";
       const tag = document.createElement("span");
