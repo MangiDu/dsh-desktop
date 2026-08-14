@@ -214,6 +214,41 @@ fn ui_intent(state: tauri::State<'_, AppState>) -> Option<String> {
     state.0.ui_intent.lock().ok()?.take()
 }
 
+/// Pick the desktop's default workspace directory, persist it, and restart
+/// the dsh child with the new cwd. Returns the chosen path (None = cancelled).
+#[tauri::command]
+async fn workspace_choose(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    let shared = state.0.clone();
+    let picked = tauri::async_runtime::spawn_blocking({
+        let app = app.clone();
+        move || {
+            let Some(folder) = app.dialog().file().blocking_pick_folder() else {
+                return Ok(None);
+            };
+            folder
+                .into_path()
+                .map(Some)
+                .map_err(|e| format!("读取所选目录路径失败: {e}"))
+        }
+    })
+    .await
+    .map_err(|e| format!("目录选择任务执行失败: {e}"))??;
+    match picked {
+        Some(path) => {
+            let mut settings = runtime::load_settings(&app);
+            settings.last_project_dir = Some(path.to_string_lossy().to_string());
+            runtime::save_settings(&app, &settings)?;
+            // Restart the child in the new workspace (session switch).
+            let _ = dsh::start(&app, &shared);
+            Ok(Some(path.to_string_lossy().to_string()))
+        }
+        None => Ok(None),
+    }
+}
+
 /// Crash recovery: wipe the managed runtime and re-bootstrap.
 #[tauri::command]
 async fn runtime_reset(app: AppHandle, state: tauri::State<'_, AppState>) -> Result<(), String> {
@@ -333,7 +368,8 @@ pub fn run() {
             update::update_history_list,
             close_choice,
             dsh_plugin_offline,
-            runtime_reset
+            runtime_reset,
+            workspace_choose
         ])
         .setup(|app| {
             let shared = app.state::<AppState>().0.clone();

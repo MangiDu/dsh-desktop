@@ -280,16 +280,26 @@ pub fn start(app: &AppHandle, shared: &Arc<Shared>) -> Result<(), String> {
     // sessions another dsh instance (e.g. a terminal one) is writing; a
     // reading instance validating a live session log can otherwise report
     // "corrupt session log: seq gap" — an artifact of concurrent access.
+    // Priority: DSH_CWD override -> the workspace picked in settings ->
+    // the default ~/dsh-desktop-workspace anchor.
     let cwd = match std::env::var("DSH_CWD") {
         Ok(v) if !v.trim().is_empty() => std::path::PathBuf::from(v.trim()),
         _ => {
-            let home = app
-                .path()
-                .home_dir()
-                .unwrap_or_else(|_| std::path::PathBuf::from("."));
-            let dir = home.join("dsh-desktop-workspace");
-            let _ = std::fs::create_dir_all(&dir);
-            dir
+            let chosen = crate::runtime::load_settings(app)
+                .last_project_dir
+                .filter(|p| std::path::Path::new(p).is_dir());
+            match chosen {
+                Some(dir) => std::path::PathBuf::from(dir),
+                None => {
+                    let home = app
+                        .path()
+                        .home_dir()
+                        .unwrap_or_else(|_| std::path::PathBuf::from("."));
+                    let dir = home.join("dsh-desktop-workspace");
+                    let _ = std::fs::create_dir_all(&dir);
+                    dir
+                }
+            }
         }
     };
 

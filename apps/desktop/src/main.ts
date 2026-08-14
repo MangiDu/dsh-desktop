@@ -341,6 +341,9 @@ async function loadSettings() {
     ($("set-interval") as HTMLInputElement).value = String(s.intervalHours);
     ($("set-registry") as HTMLInputElement).value = s.registry;
     ($("set-keep-versions") as HTMLInputElement).value = String(s.keepVersions ?? 1);
+    $("workspace-path").textContent = s.lastProjectDir
+      ? `当前：${s.lastProjectDir}`
+      : "当前：默认（~/dsh-desktop-workspace）";
     $("settings-status").textContent = "";
   } catch (err) {
     $("settings-status").textContent = `加载失败：${err}`;
@@ -348,13 +351,19 @@ async function loadSettings() {
 }
 
 $("btn-settings-save").addEventListener("click", async () => {
+  let current: Settings | null = null;
+  try {
+    current = await invoke<Settings>("settings_get");
+  } catch {
+    // fall through with defaults
+  }
   const settings: Settings = {
     channel: ($("set-channel") as HTMLSelectElement).value,
     autoUpdate: ($("set-auto-update") as HTMLInputElement).checked,
     intervalHours: Number(($("set-interval") as HTMLInputElement).value) || 12,
     registry: ($("set-registry") as HTMLInputElement).value.trim() || "https://registry.npmjs.org",
-    lastCheck: null,
-    lastProjectDir: null,
+    lastCheck: current?.lastCheck ?? null,
+    lastProjectDir: current?.lastProjectDir ?? null,
     closeAction: ($("set-close-action") as HTMLSelectElement).value,
     keepVersions: Math.min(10, Math.max(1, Number(($("set-keep-versions") as HTMLInputElement).value) || 1)),
   };
@@ -363,6 +372,22 @@ $("btn-settings-save").addEventListener("click", async () => {
     $("settings-status").textContent = "已保存 ✓";
   } catch (err) {
     $("settings-status").textContent = `保存失败：${err}`;
+  }
+});
+
+// Workspace selection (default-workspace anchor for the dsh child).
+$("btn-workspace-choose").addEventListener("click", async () => {
+  $("settings-status").textContent = "请选择目录…";
+  try {
+    const path = await invoke<string | null>("workspace_choose");
+    if (path) {
+      $("workspace-path").textContent = `当前：${path}`;
+      $("settings-status").textContent = "工作区已切换，dsh 正在重启…";
+    } else {
+      $("settings-status").textContent = "";
+    }
+  } catch (err) {
+    $("settings-status").textContent = `切换失败：${err}`;
   }
 });
 
