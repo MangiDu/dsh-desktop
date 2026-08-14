@@ -40,7 +40,7 @@ struct Envelope {
     payload: Frame,
 }
 
-fn notify(app: &AppHandle, title: &str, body: &str) {
+pub fn notify(app: &AppHandle, title: &str, body: &str) {
     println!("[dsh] notify: {title} :: {body}");
     let _ = app.notification().builder().title(title).body(body).show();
 }

@@ -144,6 +144,73 @@ listen<number>("dsh://plugin-done", (event) => {
 // Update panel (supplementary requirement #3).
 type UpdateCheck = { current: string; latest: string; updatable: boolean };
 type UpdateDone = { ok: boolean; version: string; error: string | null };
+type VersionInfo = { version: string; active: boolean; mtime: number };
+type HistoryEntry = { at: number; from: string; to: string; result: string; error: string | null };
+
+async function loadVersions() {
+  const list = $("version-list");
+  list.textContent = "";
+  try {
+    const versions = await invoke<VersionInfo[]>("update_list_versions");
+    if (versions.length === 0) {
+      const empty = document.createElement("p");
+      empty.className = "hint";
+      empty.textContent = "（无已安装版本）";
+      list.appendChild(empty);
+      return;
+    }
+    for (const v of versions) {
+      const row = document.createElement("div");
+      row.className = "version-row";
+      const tag = document.createElement("span");
+      tag.className = "version-tag";
+      tag.textContent = `v${v.version}`;
+      row.appendChild(tag);
+      if (v.active) {
+        const mark = document.createElement("span");
+        mark.className = "version-active";
+        mark.textContent = "当前";
+        row.appendChild(mark);
+      } else {
+        const btn = document.createElement("button");
+        btn.textContent = "切换";
+        btn.addEventListener("click", () => {
+          void (async () => {
+            $("update-status").textContent = `切换到 v${v.version}，重启中…`;
+            try {
+              await invoke("update_switch", { version: v.version });
+            } catch (err) {
+              $("update-status").textContent = `切换失败：${err}`;
+            }
+          })();
+        });
+        row.appendChild(btn);
+      }
+      list.appendChild(row);
+    }
+  } catch (err) {
+    $("update-status").textContent = `版本列表加载失败：${err}`;
+  }
+}
+
+async function loadHistory() {
+  try {
+    const entries = await invoke<HistoryEntry[]>("update_history_list");
+    if (entries.length === 0) return;
+    const logEl = $("update-history");
+    logEl.classList.remove("hidden");
+    logEl.classList.remove("placeholder-text");
+    logEl.textContent = entries
+      .map((e) => {
+        const t = new Date(e.at * 1000).toLocaleString();
+        const err = e.error ? `（${e.error}）` : "";
+        return `${t}  ${e.from} → ${e.to}  ${e.result}${err}`;
+      })
+      .join("\n");
+  } catch (err) {
+    console.error("[shell] update_history_list failed:", err);
+  }
+}
 
 async function runUpdateCheck() {
   $("update-status").textContent = "正在检查…";
@@ -192,6 +259,8 @@ listen<UpdateDone>("dsh://update-done", (event) => {
     $("update-status").textContent = `v${done.version} 已就绪`;
     appendLog($("update-log"), "✓ 安装完成");
     $("btn-update-restart").classList.remove("hidden");
+    void loadVersions();
+    void loadHistory();
   } else {
     $("update-status").textContent = "更新未完成";
     if (done.error) appendLog($("update-log"), `✗ ${done.error}`);
@@ -220,6 +289,7 @@ type Settings = {
   lastCheck: number | null;
   lastProjectDir: string | null;
   closeAction: string;
+  keepVersions: number;
 };
 
 async function loadSettings() {
@@ -230,6 +300,7 @@ async function loadSettings() {
     ($("set-auto-update") as HTMLInputElement).checked = s.autoUpdate;
     ($("set-interval") as HTMLInputElement).value = String(s.intervalHours);
     ($("set-registry") as HTMLInputElement).value = s.registry;
+    ($("set-keep-versions") as HTMLInputElement).value = String(s.keepVersions ?? 1);
     $("settings-status").textContent = "";
   } catch (err) {
     $("settings-status").textContent = `加载失败：${err}`;
@@ -245,6 +316,7 @@ $("btn-settings-save").addEventListener("click", async () => {
     lastCheck: null,
     lastProjectDir: null,
     closeAction: ($("set-close-action") as HTMLSelectElement).value,
+    keepVersions: Math.min(10, Math.max(1, Number(($("set-keep-versions") as HTMLInputElement).value) || 1)),
   };
   try {
     await invoke("settings_set", { settings });
@@ -261,6 +333,8 @@ invoke<string | null>("ui_intent")
     if (intent === "update") {
       show("update");
       void runUpdateCheck();
+      void loadVersions();
+      void loadHistory();
     }
     if (intent === "close-confirm") show("close-confirm");
     if (intent === "settings") {

@@ -7,9 +7,12 @@
 //! `current` pointer; the running version is untouched), streaming progress
 //! lines to the panel → the panel offers 立即重启 (dsh_restart).
 
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 
 /// Installed-vs-latest comparison result (serialized to the update panel).
@@ -70,11 +73,106 @@ pub fn check(app: &AppHandle, settings: &crate::runtime::Settings) -> Result<Che
     })
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryEntry {
+    pub at: u64,
+    pub from: String,
+    pub to: String,
+    pub result: String,
+    pub error: Option<String>,
+}
+
+const HISTORY_FILE: &str = "update-history.json";
+
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn history_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    let data = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("无法解析应用数据目录: {e}"))?;
+    Ok(data.join(HISTORY_FILE))
+}
+
+fn load_history(app: &AppHandle) -> Vec<HistoryEntry> {
+    let Ok(path) = history_path(app) else {
+        return Vec::new();
+    };
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+/// Append one update-history entry (capped at 50, atomic save).
+pub fn record_update(app: &AppHandle, from: &str, to: &str, result: &str, error: Option<String>) {
+    let mut entries = load_history(app);
+    entries.push(HistoryEntry {
+        at: unix_now(),
+        from: from.to_string(),
+        to: to.to_string(),
+        result: result.to_string(),
+        error,
+    });
+    if entries.len() > 50 {
+        entries = entries.split_off(entries.len() - 50);
+    }
+    let Ok(path) = history_path(app) else {
+        return;
+    };
+    let Some(dir) = path.parent().map(|p| p.to_path_buf()) else {
+        return;
+    };
+    let _ = std::fs::create_dir_all(&dir);
+    if let Ok(json) = serde_json::to_string_pretty(&entries) {
+        let tmp = dir.join(".update-history.tmp");
+        let _ = std::fs::write(&tmp, json);
+        let _ = std::fs::rename(&tmp, &path);
+    }
+}
+
+#[tauri::command]
+pub fn update_history_list(app: AppHandle) -> Vec<HistoryEntry> {
+    let mut entries = load_history(&app);
+    entries.reverse();
+    entries.truncate(5);
+    entries
+}
+
+#[tauri::command]
+pub fn update_list_versions(app: AppHandle) -> Vec<crate::runtime::VersionInfo> {
+    crate::runtime::list_versions(&app)
+}
+
+/// Rollback entry: point `current` at an installed version and restart dsh.
+#[tauri::command]
+pub fn update_switch(
+    app: AppHandle,
+    state: tauri::State<'_, crate::AppState>,
+    version: String,
+) -> Result<(), String> {
+    let previous = crate::runtime::current_version(&app).unwrap_or_else(|| "未知".to_string());
+    crate::runtime::switch_version(&app, &version)?;
+    crate::update::record_update(&app, &previous, &version, "switched", None);
+    let _ = crate::dsh::start(&app, &state.0);
+    Ok(())
+}
+
 /// Panel command: compare installed vs registry.
 #[tauri::command]
 pub fn update_check(app: AppHandle) -> Result<Check, String> {
     let settings = crate::runtime::load_settings(&app);
-    check(&app, &settings)
+    let result = check(&app, &settings)?;
+    let mut saved = settings;
+    saved.last_check = Some(unix_now());
+    let _ = crate::runtime::save_settings(&app, &saved);
+    Ok(result)
 }
 
 /// Panel command: install the newest version in the background. Progress
@@ -82,8 +180,10 @@ pub fn update_check(app: AppHandle) -> Result<Check, String> {
 #[tauri::command]
 pub fn update_apply(app: AppHandle, state: tauri::State<'_, crate::AppState>) -> Result<(), String> {
     let shared = state.0.clone();
+    shared.install_busy.store(true, Ordering::SeqCst);
     thread::spawn(move || {
         let settings = crate::runtime::load_settings(&app);
+        let from = crate::runtime::current_version(&app).unwrap_or_else(|| "dev".to_string());
         let latest = match check(&app, &settings) {
             Ok(c) if c.updatable => c.latest,
             Ok(c) => {
@@ -117,6 +217,7 @@ pub fn update_apply(app: AppHandle, state: tauri::State<'_, crate::AppState>) ->
         };
         match crate::runtime::bootstrap(&app, &settings, &latest, &on_line) {
             Ok(version) => {
+                record_update(&app, &from, &version, "ok", None);
                 let _ = app.emit(
                     "dsh://update-done",
                     Done {
@@ -127,6 +228,7 @@ pub fn update_apply(app: AppHandle, state: tauri::State<'_, crate::AppState>) ->
                 );
             }
             Err(e) => {
+                record_update(&app, &from, &latest, "failed", Some(e.clone()));
                 let _ = app.emit(
                     "dsh://update-done",
                     Done {
@@ -138,6 +240,64 @@ pub fn update_apply(app: AppHandle, state: tauri::State<'_, crate::AppState>) ->
             }
         }
         shared.push_line("update flow finished".to_string());
+        shared.install_busy.store(false, Ordering::SeqCst);
     });
     Ok(())
+}
+
+/// Background scheduler: when autoUpdate is on, check every intervalHours
+/// (lastCheck persisted, 60s tick), silently install newer versions, and
+/// notify that a restart activates them — never restarts by itself.
+pub fn spawn_scheduler(app: AppHandle, shared: Arc<crate::dsh::Shared>) {
+    thread::spawn(move || loop {
+        thread::sleep(Duration::from_secs(60));
+        let settings = crate::runtime::load_settings(&app);
+        if !settings.auto_update || shared.install_busy.load(Ordering::SeqCst) {
+            continue;
+        }
+        let now = unix_now();
+        let interval = u64::from(settings.interval_hours.max(1)) * 3600;
+        let due = settings.last_check.is_none_or(|lc| now.saturating_sub(lc) >= interval);
+        if !due {
+            continue;
+        }
+        let mut saved = settings.clone();
+        saved.last_check = Some(now);
+        let _ = crate::runtime::save_settings(&app, &saved);
+        match check(&app, &settings) {
+            Ok(info) if info.updatable => auto_install(&app, &shared, &settings, &info),
+            Ok(_) => {}
+            Err(e) => println!("[dsh] auto-update check failed: {e}"),
+        }
+    });
+}
+
+fn auto_install(
+    app: &AppHandle,
+    shared: &Arc<crate::dsh::Shared>,
+    settings: &crate::runtime::Settings,
+    info: &Check,
+) {
+    shared.install_busy.store(true, Ordering::SeqCst);
+    let app_lines = app.clone();
+    let on_line = move |line: &str| {
+        println!("[dsh] auto-update: {line}");
+        let _ = app_lines.emit("dsh://update-line", line.to_string());
+    };
+    let result = crate::runtime::bootstrap(app, settings, &info.latest, &on_line);
+    match result {
+        Ok(version) => {
+            record_update(app, &info.current, &version, "ok", None);
+            crate::listener::notify(
+                app,
+                "dsh 更新",
+                &format!("v{version} 已就绪，重启 dsh 后生效（菜单「重启 dsh」）。"),
+            );
+        }
+        Err(e) => {
+            record_update(app, &info.current, &info.latest, "failed", Some(e.clone()));
+            crate::listener::notify(app, "dsh 更新", &format!("自动更新失败：{e}"));
+        }
+    }
+    shared.install_busy.store(false, Ordering::SeqCst);
 }

@@ -41,6 +41,21 @@ pub struct Settings {
     /// Close-button behaviour: "ask" | "quit" | "background".
     #[serde(default = "default_close_action")]
     pub close_action: String,
+    /// Last version that reached a ready handshake (auto-rollback target).
+    #[serde(default)]
+    pub last_known_good: Option<String>,
+    /// Rollback retention: keep this many rollback-able versions (1..=10).
+    #[serde(default = "default_keep_versions")]
+    pub keep_versions: u32,
+}
+
+fn default_keep_versions() -> u32 {
+    1
+}
+
+/// Clamp retention to the supported 1..=10 range.
+pub fn clamp_keep_versions(n: u32) -> u32 {
+    n.clamp(1, 10)
 }
 
 fn default_close_action() -> String {
@@ -57,6 +72,8 @@ impl Default for Settings {
             last_check: None,
             last_project_dir: None,
             close_action: "ask".to_string(),
+            last_known_good: None,
+            keep_versions: 1,
         }
     }
 }
@@ -109,11 +126,13 @@ pub fn load_settings(app: &AppHandle) -> Settings {
 }
 
 pub fn save_settings(app: &AppHandle, settings: &Settings) -> Result<(), String> {
+    let mut settings = settings.clone();
+    settings.keep_versions = clamp_keep_versions(settings.keep_versions);
     let dir = app_data(app)?;
     fs::create_dir_all(&dir).map_err(|e| format!("创建应用数据目录失败: {e}"))?;
     let path = dir.join(SETTINGS_FILE);
     let tmp = dir.join(".settings.tmp");
-    let json = serde_json::to_string_pretty(settings).map_err(|e| format!("序列化设置失败: {e}"))?;
+    let json = serde_json::to_string_pretty(&settings).map_err(|e| format!("序列化设置失败: {e}"))?;
     fs::write(&tmp, json).map_err(|e| format!("写入设置失败: {e}"))?;
     fs::rename(&tmp, &path).map_err(|e| format!("保存设置失败: {e}"))?;
     Ok(())
@@ -143,6 +162,115 @@ fn read_current(app: &AppHandle) -> Option<String> {
     } else {
         Some(version)
     }
+}
+
+/// Whether a version dir exists and is complete.
+pub fn version_complete(app: &AppHandle, version: &str) -> bool {
+    versions_dir(app)
+        .map(|d| is_complete(&d.join(version)))
+        .unwrap_or(false)
+}
+
+/// Installed versions, newest first, with the active one marked.
+pub fn list_versions(app: &AppHandle) -> Vec<VersionInfo> {
+    let Ok(versions) = versions_dir(app) else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(&versions) else {
+        return Vec::new();
+    };
+    let mut list: Vec<VersionInfo> = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') || !is_complete(&entry.path()) {
+            continue;
+        }
+        let mtime = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        list.push(VersionInfo {
+            version: name,
+            active: false,
+            mtime,
+        });
+    }
+    let current = read_current(app);
+    for info in &mut list {
+        info.active = current.as_deref() == Some(info.version.as_str());
+    }
+    list.sort_by(|a, b| b.mtime.cmp(&a.mtime));
+    list
+}
+
+/// Atomically point `current` at an existing, complete version.
+pub fn switch_version(app: &AppHandle, version: &str) -> Result<(), String> {
+    if !version_complete(app, version) {
+        return Err(format!("版本 {version} 不存在或安装不完整"));
+    }
+    write_current(app, version)
+}
+
+/// Prune version dirs not in the keep set (current + last known good +
+/// the two newest others). Staging dirs are always removed.
+pub fn prune_versions(app: &AppHandle) {
+    let Ok(versions) = versions_dir(app) else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(&versions) else {
+        return;
+    };
+    let mut keep: Vec<String> = Vec::new();
+    if let Some(c) = read_current(app) {
+        keep.push(c);
+    }
+    let settings = load_settings(app);
+    if let Some(lkg) = last_known_good_in(&settings) {
+        keep.push(lkg);
+    }
+    // newest keep_versions complete versions as extra keep
+    let n = clamp_keep_versions(settings.keep_versions) as usize;
+    let mut list = list_versions(app);
+    list.retain(|v| !keep.contains(&v.version));
+    keep.extend(list.into_iter().take(n).map(|v| v.version));
+
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        let is_staging = name.starts_with(STAGING_PREFIX);
+        let path = entry.path();
+        if is_staging || (!keep.contains(&name) && path.is_dir()) {
+            let _ = std::fs::remove_dir_all(&path);
+            println!("[dsh] pruned version dir: {name}");
+        }
+    }
+}
+
+/// Last version that reached a ready handshake (auto-rollback target).
+pub fn last_known_good(app: &AppHandle) -> Option<String> {
+    last_known_good_in(&load_settings(app))
+}
+
+pub fn set_last_known_good(app: &AppHandle, version: &str) {
+    let mut settings = load_settings(app);
+    if settings.last_known_good.as_deref() != Some(version) {
+        settings.last_known_good = Some(version.to_string());
+        let _ = save_settings(app, &settings);
+    }
+}
+
+fn last_known_good_in(settings: &Settings) -> Option<String> {
+    settings.last_known_good.clone()
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VersionInfo {
+    pub version: String,
+    pub active: bool,
+    pub mtime: u64,
 }
 
 /// Resolution outcome for the dsh bin used to launch the child.

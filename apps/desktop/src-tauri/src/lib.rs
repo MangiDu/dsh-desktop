@@ -281,6 +281,9 @@ pub fn run() {
             ui_intent,
             update::update_check,
             update::update_apply,
+            update::update_list_versions,
+            update::update_switch,
+            update::update_history_list,
             close_choice,
             dsh_plugin_offline
         ])
@@ -367,6 +370,9 @@ pub fn run() {
             // Show the shell UI first so it can render the "starting" state.
             dsh::ensure_splash(app.handle());
             let _ = dsh::start(app.handle(), &shared);
+
+            // Auto-update scheduler (respects settings.autoUpdate).
+            update::spawn_scheduler(app.handle().clone(), shared.clone());
             Ok(())
         })
         .build(tauri::generate_context!())

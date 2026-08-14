@@ -12,7 +12,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -82,6 +82,8 @@ pub struct Shared {
     pub seq: AtomicU64,
     /// Panel the shell UI should open on next load ("plugin", …).
     pub ui_intent: Mutex<Option<String>>,
+    /// A runtime install/update is in progress (scheduler mutex).
+    pub install_busy: AtomicBool,
 }
 
 impl Shared {
@@ -380,6 +382,13 @@ fn on_ready(app: &AppHandle, shared: &Arc<Shared>, id: u64, port: u16) {
     *shared.phase.lock().unwrap() = Phase::Ready { url: url.clone() };
     println!("[dsh] ready: {url}");
 
+    // A managed runtime that reached ready is the new last-known-good;
+    // prune version dirs beyond current + lkg + two newest.
+    if let Some(version) = crate::runtime::current_version(app) {
+        crate::runtime::set_last_known_good(app, &version);
+        crate::runtime::prune_versions(app);
+    }
+
     let app2 = app.clone();
     let shared2 = shared.clone();
     let url2 = url.clone();
@@ -492,6 +501,33 @@ fn on_exit(app: &AppHandle, shared: &Arc<Shared>, id: u64, code: Option<i32>) {
     if shared.seq.load(Ordering::SeqCst) != id {
         return;
     }
+    // Auto-rollback: a managed runtime that died BEFORE the ready handshake
+    // (e.g. right after an update) falls back to the last version that did
+    // reach ready, then restarts with it.
+    let was_starting = matches!(*shared.phase.lock().unwrap(), Phase::Starting);
+    if was_starting {
+        if let Some(current) = crate::runtime::current_version(app) {
+            if let Some(good) = crate::runtime::last_known_good(app) {
+                if current != good && crate::runtime::version_complete(app, &good) {
+                    if crate::runtime::switch_version(app, &good).is_ok() {
+                        println!("[dsh] auto-rollback: {current} -> {good}");
+                        crate::update::record_update(
+                            app,
+                            &current,
+                            &good,
+                            "rolled-back",
+                            Some(format!("新版本启动失败（退出码 {code:?}），已自动回退")),
+                        );
+                        if let Ok(mut g) = shared.slot.lock() {
+                            *g = None;
+                        }
+                        let _ = start(app, shared);
+                        return;
+                    }
+                }
+            }
+        }
+    }
     if let Ok(mut g) = shared.slot.lock() {
         if let Some(sup) = g.as_ref() {
             if sup.id == id {
@@ -530,6 +566,7 @@ fn bootstrap_in_background(app: &AppHandle, shared: &Arc<Shared>, settings: crat
 
     let app2 = app.clone();
     let shared2 = shared.clone();
+    shared2.install_busy.store(true, Ordering::SeqCst);
     thread::spawn(move || {
         let app3 = app2.clone();
         let shared3 = shared2.clone();
@@ -552,6 +589,7 @@ fn bootstrap_in_background(app: &AppHandle, shared: &Arc<Shared>, settings: crat
                 fail_start(&app2, &shared2, format!("dsh 运行时安装失败: {reason}"));
             }
         }
+        shared2.install_busy.store(false, Ordering::SeqCst);
     });
 }
 
