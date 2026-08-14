@@ -48,6 +48,39 @@ const HANDSHAKE_PREFIX: &str = "dsh web: http://127.0.0.1:";
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 const RING_CAP: usize = 400;
 
+/// Passive page-side logger for the "second click" diagnosis: capture-phase
+/// mousedown/mouseup/click with a compact target descriptor, printed to the
+/// Web Inspector console. Read-only: it never touches page state or events.
+const CLICK_LOG_SCRIPT: &str = r##"
+(function () {
+  function desc(t) {
+    try {
+      if (!t) return "?";
+      var el = t;
+      var s = (el.tagName || "?").toLowerCase();
+      if (el.id) s += "#" + el.id;
+      var c = String(el.className && el.className.baseVal !== undefined ? el.className.baseVal : el.className || "").trim();
+      if (c) s += "." + c.split(/\s+/).slice(0, 3).join(".");
+      return s;
+    } catch (e) { return "?"; }
+  }
+  function log(kind, e) {
+    try {
+      console.log("[dsh-shell-click]", kind,
+        "target=" + desc(e.target),
+        "down=" + desc(window.__dshDownTarget),
+        "x=" + e.clientX, "y=" + e.clientY, "detail=" + e.detail);
+    } catch (err) {}
+  }
+  document.addEventListener("mousedown", function (e) {
+    window.__dshDownTarget = e.target;
+    log("mousedown", e);
+  }, true);
+  document.addEventListener("mouseup", function (e) { log("mouseup", e); }, true);
+  document.addEventListener("click", function (e) { log("click", e); }, true);
+})();
+"##;
+
 /// State broadcast to the shell UI (event `dsh://state` and `dsh_status`).
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "phase", rename_all = "camelCase")]
@@ -463,6 +496,11 @@ fn on_ready(app: &AppHandle, shared: &Arc<Shared>, id: u64, port: u16) {
             // First click delivers immediately even when the window is not
             // key (browser-like); without this the first click only focuses.
             .accept_first_mouse(true)
+            // Diagnostics for the "second click" issue: make the page
+            // inspectable from Safari's Develop menu and passively log
+            // mousedown/mouseup/click with target descriptors to the console.
+            .devtools(true)
+            .initialization_script(CLICK_LOG_SCRIPT)
             .build()
         {
             Ok(window) => {
