@@ -56,6 +56,7 @@ UI：`apps/desktop/` Vite 多页(index.html 面板集 + toast.html)，事件协�
 8. **运行桌面应用需超 workspace 沙箱权限**：本会话所有启动/验收命令都带 `sandbox_permissions: danger-full-access`（写 ~/Library、spawn node、进程检查），新会话照旧。
 9. **tauri dev 会跑 `cargo run --no-default-features`**：与裸 `cargo build`（默认 features）feature 集合不同，互相切换会触发全量重编（~1min），正常现象。
 10. 窗口竞态三连（面板事件/Toast 载荷/意图）都靠**拉取模型**解决：Rust 状态存值 + 页面加载后 invoke 拉取 + 事件实时更新。
+11. **Toast 窗口是复用的、首次 6s 自隐后永不再弹**——任何"第二次不弹提示"的 bug 先查窗口是否被 hide 后没有 re-show（`listener.rs toast()` 已修复：每次事件 emit 后 `show()`；macOS `show()`=setIsVisible，不抢焦点）。
 
 ## 5. 开发运行
 
