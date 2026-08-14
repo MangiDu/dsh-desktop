@@ -178,21 +178,47 @@ fn emit_state(app: &AppHandle, phase: Phase) {
 }
 
 pub fn ensure_splash(app: &AppHandle) {
-    println!("[dsh] ensure_splash: exists={}", app.get_webview_window(SPLASH_LABEL).is_some());
-    if app.get_webview_window(SPLASH_LABEL).is_some() {
+    println!(
+        "[dsh] ensure_splash: exists={}",
+        app.get_webview_window(SPLASH_LABEL).is_some()
+    );
+    // The shell window lives hidden for the whole app lifetime (ready
+    // transition and red X both hide it); reopening is just show+focus —
+    // instant, no page reload, no white flash.
+    if let Some(window) = app.get_webview_window(SPLASH_LABEL) {
+        let _ = window.show();
+        let _ = window.set_focus();
         return;
     }
     let app = app.clone();
     if let Err(e) = app.clone().run_on_main_thread(move || {
-        let built = WebviewWindowBuilder::new(&app, SPLASH_LABEL, WebviewUrl::App("index.html".into()))
+        match WebviewWindowBuilder::new(&app, SPLASH_LABEL, WebviewUrl::App("index.html".into()))
             .title("dsh desktop")
             .inner_size(520.0, 440.0)
             .min_inner_size(420.0, 380.0)
             .resizable(true)
             .center()
-            .build();
-        if let Err(e) = built {
-            eprintln!("[dsh] create splash window failed: {e}");
+            .background_color(tauri::utils::config::Color(16, 17, 26, 255))
+            .build()
+        {
+            Ok(window) => {
+                // Red X hides instead of destroying (rebuilding would flash
+                // white and reload on the next open).
+                let handle = window.clone();
+                window.on_window_event(move |event| {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        let _ = handle.hide();
+                    }
+                });
+                // Newly created windows can land behind the focused main
+                // window; bring the shell window to the front explicitly.
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+            Err(e) => {
+                eprintln!("[dsh] create splash window failed: {e}");
+            }
         }
     }) {
         eprintln!("[dsh] run_on_main_thread failed: {e}");
