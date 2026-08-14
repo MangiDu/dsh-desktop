@@ -223,6 +223,9 @@ pub fn ensure_splash(app: &AppHandle) {
                         api.prevent_close();
                         let _ = handle.hide();
                     }
+                    if let tauri::WindowEvent::Focused(f) = event {
+                        crate::listener::diag(&handle.app_handle(), &format!("focus: splash={f}"));
+                    }
                 });
                 // Newly created windows can land behind the focused main
                 // window; bring the shell window to the front explicitly.
@@ -468,6 +471,12 @@ fn on_ready(app: &AppHandle, shared: &Arc<Shared>, id: u64, port: u16) {
                 let shared4 = shared3.clone();
                 let window2 = window.clone();
                 window.on_window_event(move |event| {
+                    if let tauri::WindowEvent::Focused(f) = event {
+                        crate::listener::diag(
+                            &window2.app_handle(),
+                            &format!("focus: main={f}"),
+                        );
+                    }
                     if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                         // Only guard the close while dsh is running; when dsh
                         // has exited, closing is just dismissing the window.

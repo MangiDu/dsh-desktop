@@ -340,6 +340,56 @@ fn enable_first_mouse_click_through() {
     }
 }
 
+/// macOS: give the visible main window its key status back the moment focus
+/// could otherwise be stolen mid-gesture — right after ANY menu finishes
+/// tracking (app menu bar, tray menu, context menus) and whenever the app
+/// becomes active again (notification click, Dock click, Cmd+Tab). Without
+/// this the NEXT click lands while the window is still non-key: mousedown
+/// only makes the window key, the webview's focus transition re-renders the
+/// page (mousedown/mouseup end up on different nodes) and that click is
+/// lost — the GUI feels like it needs a second click. Browsers never hit
+/// this because their window is always key before the click.
+#[cfg(target_os = "macos")]
+fn observe_key_restore(app: tauri::AppHandle) {
+    use std::ptr::NonNull;
+
+    use block2::RcBlock;
+    use objc2_app_kit::{
+        NSApplicationDidBecomeActiveNotification, NSMenuDidEndTrackingNotification,
+    };
+    use objc2_foundation::{NSNotification, NSNotificationCenter};
+
+    let block = RcBlock::new(move |_note: NonNull<NSNotification>| {
+        if let Some(main) = app.get_webview_window(crate::dsh::MAIN_LABEL) {
+            let splash_front = app
+                .get_webview_window(crate::dsh::SPLASH_LABEL)
+                .is_some_and(|s| s.is_visible().unwrap_or(false));
+            if main.is_visible().unwrap_or(false) && !splash_front {
+                let _ = main.set_focus();
+            }
+        }
+    });
+    let center = NSNotificationCenter::defaultCenter();
+    unsafe {
+        // Observers live for the whole app lifetime: registering leaks them
+        // on purpose (removing them at shutdown is irrelevant).
+        let a = center.addObserverForName_object_queue_usingBlock(
+            Some(NSApplicationDidBecomeActiveNotification),
+            None,
+            None,
+            &block,
+        );
+        std::mem::forget(a);
+        let b = center.addObserverForName_object_queue_usingBlock(
+            Some(NSMenuDidEndTrackingNotification),
+            None,
+            None,
+            &block,
+        );
+        std::mem::forget(b);
+    }
+}
+
 /// Show the dsh main window, or the shell window when there is none yet.
 fn show_main_or_splash(app: &AppHandle) {
     if let Some(w) = app.get_webview_window(dsh::MAIN_LABEL) {
@@ -424,6 +474,11 @@ pub fn run() {
             // swallowing it to merely activate it (browser-like behaviour).
             #[cfg(target_os = "macos")]
             enable_first_mouse_click_through();
+
+            // Restore the main window's key status after menus/app activation
+            // so clicks never land mid key-transition (second-click bug).
+            #[cfg(target_os = "macos")]
+            observe_key_restore(app.handle().clone());
 
             // System notification permission (macOS prompts once; the toast
             // banner stays as the fallback until/unless granted).
