@@ -122,6 +122,11 @@ fn write_current(app: &AppHandle, version: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Active version per the `current` pointer (None when unmanaged/DSH_BIN).
+pub fn current_version(app: &AppHandle) -> Option<String> {
+    read_current(app)
+}
+
 fn read_current(app: &AppHandle) -> Option<String> {
     let text = fs::read_to_string(runtime_dir(app).ok()?.join(CURRENT_FILE)).ok()?;
     let version = text.trim().to_string();
@@ -195,9 +200,12 @@ pub fn resolve_active_bin(app: &AppHandle) -> Resolve {
 
 /// Install a fresh runtime. Reports progress lines through `on_line`.
 /// Returns the installed version.
+/// Install a runtime; `spec` is either a dist-tag (`latest`/`next`) or an
+/// exact version (`0.1.0-rc.7`). Same staging → verify → pointer flow.
 pub fn bootstrap(
     app: &AppHandle,
     settings: &Settings,
+    spec: &str,
     on_line: &(dyn Fn(&str) + Send + Sync),
 ) -> Result<String, String> {
     // npm must exist (it ships with Node, which start() already checked).
@@ -220,9 +228,9 @@ pub fn bootstrap(
     let staging = versions.join(format!("{}-{secs}", STAGING_PREFIX));
     let _ = fs::remove_dir_all(&staging);
 
-    on_line(&format!("安装 {PKG}@{}({})…", settings.channel, settings.registry));
+    on_line(&format!("安装 {PKG}@{spec}({})…", settings.registry));
     let mut cmd = Command::new("npm");
-    cmd.args(["install", &format!("{PKG}@{}", settings.channel)])
+    cmd.args(["install", &format!("{PKG}@{spec}")])
         .args(["--prefix", staging.to_str().unwrap_or_default()])
         .args(["--cache", cache.to_str().unwrap_or_default()])
         .args(["--registry", &settings.registry])

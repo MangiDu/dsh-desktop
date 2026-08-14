@@ -82,6 +82,8 @@ pub struct Shared {
     pub seq: AtomicU64,
     /// Guards against stacking close-confirmation dialogs.
     pub close_prompt_open: AtomicBool,
+    /// Panel the shell UI should open on next load ("plugin", …).
+    pub ui_intent: Mutex<Option<String>>,
 }
 
 impl Shared {
@@ -531,7 +533,8 @@ fn bootstrap_in_background(app: &AppHandle, shared: &Arc<Shared>, settings: crat
             *shared3.phase.lock().unwrap() = phase.clone();
             emit_state(&app3, phase);
         };
-        match crate::runtime::bootstrap(&app2, &settings, &on_line) {
+        let spec = settings.channel.clone();
+        match crate::runtime::bootstrap(&app2, &settings, &spec, &on_line) {
             Ok(version) => {
                 println!("[dsh] bootstrap done: {version}");
                 if let Err(e) = start(&app2, &shared2) {

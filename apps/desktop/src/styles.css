@@ -87,6 +87,32 @@ h1 {
   gap: 10px;
 }
 
+.row {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+}
+
+.row input {
+  flex: 1;
+  appearance: none;
+  border: 1px solid #34343e;
+  background: #17171c;
+  color: #e8e8ea;
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+code {
+  background: #17171c;
+  border: 1px solid #2a2a32;
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 12px;
+}
+
 button {
   appearance: none;
   border: 1px solid #34343e;

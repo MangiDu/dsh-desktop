@@ -1,11 +1,13 @@
 mod dsh;
 mod listener;
 mod runtime;
+mod update;
 
 use std::sync::Arc;
 
 use dsh::Phase;
-use tauri::{AppHandle, Manager, RunEvent};
+use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
+use tauri::{AppHandle, Emitter, Manager, RunEvent};
 
 /// Managed state: everything the watcher threads and commands share.
 struct AppState(Arc<dsh::Shared>);
@@ -40,6 +42,65 @@ fn runtime_bootstrap(app: AppHandle, state: tauri::State<'_, AppState>) -> Resul
     dsh::bootstrap_now(&app, &state.0)
 }
 
+/// Run `dsh plugin --profile web <args…>` (e.g. ["add", "pkg"]) for the
+/// managed runtime, streaming output lines to the shell UI.
+#[tauri::command]
+fn dsh_plugin(app: AppHandle, args: Vec<String>) -> Result<(), String> {
+    let bin = match runtime::resolve_active_bin(&app) {
+        runtime::Resolve::Ready(b) => b,
+        runtime::Resolve::NeedBootstrap => {
+            return Err("dsh 运行时尚未安装，请先启动一次应用完成初始化".to_string())
+        }
+        runtime::Resolve::Failed(e) => return Err(e),
+    };
+    let mut cmd = std::process::Command::new("node");
+    cmd.arg(&bin)
+        .arg("plugin")
+        .arg("--profile")
+        .arg("web")
+        .args(&args)
+        .env("DSH_DESKTOP_CHILD", "1")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = cmd.spawn().map_err(|e| format!("启动 dsh plugin 失败: {e}"))?;
+
+    use std::io::{BufRead, BufReader};
+    let app_out = app.clone();
+    if let Some(out) = child.stdout.take() {
+        std::thread::spawn(move || {
+            for line in BufReader::new(out).lines().map_while(Result::ok) {
+                let _ = app_out.emit("dsh://plugin-log", line);
+            }
+        });
+    }
+    let app_err = app.clone();
+    if let Some(err) = child.stderr.take() {
+        std::thread::spawn(move || {
+            for line in BufReader::new(err).lines().map_while(Result::ok) {
+                let _ = app_err.emit("dsh://plugin-log", format!("[stderr] {line}"));
+            }
+        });
+    }
+    std::thread::spawn(move || {
+        let code = child.wait().map(|s| s.code().unwrap_or(-1)).unwrap_or(-1);
+        let _ = app.emit("dsh://plugin-done", code);
+    });
+    Ok(())
+}
+
+/// The panel the shell UI should show on load, consumed once.
+#[tauri::command]
+fn ui_intent(state: tauri::State<'_, AppState>) -> Option<String> {
+    state.0.ui_intent.lock().ok()?.take()
+}
+
+fn open_plugin_panel(app: &AppHandle) {
+    if let Ok(mut intent) = app.state::<AppState>().0.ui_intent.lock() {
+        *intent = Some("plugin".to_string());
+    }
+    dsh::ensure_splash(app);
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -51,7 +112,9 @@ pub fn run() {
             app_quit,
             settings_get,
             settings_set,
-            runtime_bootstrap
+            runtime_bootstrap,
+            dsh_plugin,
+            ui_intent
         ])
         .setup(|app| {
             let shared = app.state::<AppState>().0.clone();
@@ -63,6 +126,37 @@ pub fn run() {
             // Persist default settings on first run.
             let settings = runtime::load_settings(app.handle());
             let _ = runtime::save_settings(app.handle(), &settings);
+
+            // App menu: manual update check, plugin install, restart, quit.
+            {
+                let check = MenuItemBuilder::with_id("menu-check-update", "检查更新…")
+                    .build(app)?;
+                let plugin = MenuItemBuilder::with_id("menu-install-plugin", "安装插件…")
+                    .build(app)?;
+                let restart = MenuItemBuilder::with_id("menu-restart-dsh", "重启 dsh")
+                    .build(app)?;
+                let quit = MenuItemBuilder::with_id("menu-quit", "退出 dsh desktop")
+                    .accelerator("CmdOrCtrl+Q")
+                    .build(app)?;
+                let submenu = SubmenuBuilder::new(app, "dsh desktop")
+                    .items(&[&check, &plugin, &restart, &quit])
+                    .build()?;
+                let menu = MenuBuilder::new(app).items(&[&submenu]).build()?;
+                app.set_menu(menu)?;
+                app.on_menu_event(|app, event| match event.id().as_ref() {
+                    "menu-check-update" => {
+                        let shared = app.state::<AppState>().0.clone();
+                        update::check_and_update(app, &shared);
+                    }
+                    "menu-install-plugin" => open_plugin_panel(app),
+                    "menu-restart-dsh" => {
+                        let shared = app.state::<AppState>().0.clone();
+                        let _ = dsh::start(app, &shared);
+                    }
+                    "menu-quit" => app.exit(0),
+                    _ => {}
+                });
+            }
 
             // Reap a dsh child orphaned by a previous run (e.g. SIGKILLed app).
             dsh::reap_orphan(app.handle());

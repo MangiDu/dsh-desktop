@@ -19,7 +19,8 @@ Tauri 2 壳 (Rust)
 - M2 已完成：dsh 安装到应用数据目录（版本化 + `current` 指针 + 首次自动 bootstrap）。
 - 关闭按钮二次确认：完全退出 / 后台运行（隐藏窗口，点击 Dock 图标恢复）。
 - 非侵入事件监听（`listener.rs`）：以额外消费者身份接入 dsh 的 `/api/events.mux` 与 `/api/events.host`（不修改 dsh），`approval/requested`、`question/requested`、`host/agent-error` 等事件触发原生通知 + Dock 徽标 + 窗口聚焦。
-- M3 起支持自动/手动更新（registry 检测 + 蓝绿安装 + 回滚）。
+- 应用菜单：**检查更新…**（registry 检测 → 询问 → 蓝绿安装 → 询问重启）、**安装插件…**（shell UI 面板，执行 `dsh plugin --profile web add <pkg>`，日志实时流式显示）、**重启 dsh**、退出。
+- M3 剩余项：自动更新定时器、回滚入口、更新历史；M4 打磨（托盘/单实例/打开文件夹）。
 
 ## 开发
 
@@ -52,4 +53,5 @@ apps/desktop/           Tauri 壳
 - [x] M0 脚手架 + M1 MVP（2026-08-13/14：spawn `dsh web --port 0` → 握手解析 → 主 WebView；孤儿回收；错误页+重试；退出无残留）
 - [x] M2 受管运行时（2026-08-14：版本化安装 + `current` 指针 + 首次 bootstrap，二次启动 4.2s 无重装）
 - [x] 补充需求：关闭确认（退出/后台）+ 非侵入事件通知（mux/host 监听 + 原生通知）
-- [ ] M3 更新系统 · M4 打磨 · M5 分发
+- [x] 补充需求：手工检查更新菜单（检测→询问→蓝绿安装→询问重启）+ 插件安装面板（`dsh plugin` 命令入口）
+- [ ] M3 剩余（自动更新定时器/回滚入口）· M4 打磨 · M5 分发

@@ -1,5 +1,6 @@
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 /**
  * Shell UI contract (M1):
@@ -24,6 +25,7 @@ const panels = {
   splash: $("panel-splash"),
   error: $("panel-error"),
   failed: $("panel-failed"),
+  plugin: $("panel-plugin"),
 };
 
 function show(panel: keyof typeof panels) {
@@ -88,3 +90,36 @@ listen<DshState>("dsh://state", (event) => {
 invoke<DshState>("dsh_status").then((state) => void onState(state)).catch((err) => {
   console.error("[shell] dsh_status failed:", err);
 });
+
+// Plugin panel (supplementary requirement #4).
+$("btn-plugin-add").addEventListener("click", async () => {
+  const input = $("plugin-pkg") as HTMLInputElement;
+  const pkg = input.value.trim();
+  if (!pkg) return;
+  $("plugin-log").textContent = `安装 ${pkg}…\n`;
+  try {
+    await invoke("dsh_plugin", { args: ["add", pkg] });
+  } catch (err) {
+    $("plugin-log").textContent += `错误：${err}\n`;
+  }
+});
+
+$("btn-plugin-close").addEventListener("click", async () => {
+  await getCurrentWindow().close();
+});
+
+listen<string>("dsh://plugin-log", (event) => {
+  $("plugin-log").textContent += event.payload + "\n";
+});
+
+listen<number>("dsh://plugin-done", (event) => {
+  $("plugin-log").textContent +=
+    event.payload === 0 ? "\n✓ 完成（重启 dsh 后生效）" : `\n✗ 失败（退出码 ${event.payload}）`;
+});
+
+// Re-opened for a specific panel? The host stores the intent once.
+invoke<string | null>("ui_intent")
+  .then((intent) => {
+    if (intent === "plugin") show("plugin");
+  })
+  .catch((err) => console.error("[shell] ui_intent failed:", err));

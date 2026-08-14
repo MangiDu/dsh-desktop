@@ -22,6 +22,18 @@
           <button id="btn-quit" type="button">退出</button>
         </div>
       </main>
+      <main class="panel hidden" id="panel-plugin">
+        <h1>安装 dsh 插件</h1>
+        <p class="hint">执行 <code>dsh plugin --profile web add &lt;包名&gt;</code>（需要 pnpm）</p>
+        <div class="row">
+          <input id="plugin-pkg" type="text" placeholder="例如 @scope/pkg" spellcheck="false" />
+          <button id="btn-plugin-add" class="primary" type="button">安装</button>
+        </div>
+        <pre id="plugin-log" class="log"></pre>
+        <div class="actions">
+          <button id="btn-plugin-close" type="button">关闭窗口</button>
+        </div>
+      </main>
       <main class="panel hidden" id="panel-failed">
         <h1>dsh 已退出</h1>
         <p class="hint" id="failed-hint"></p>
