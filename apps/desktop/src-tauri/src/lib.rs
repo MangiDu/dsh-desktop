@@ -444,6 +444,10 @@ pub fn run() {
                     .icon(tauri::image::Image::from_bytes(include_bytes!(
                         "../icons/tray-icon-32.png"
                     ))?)
+                    // The tray icon is a white silhouette on transparency:
+                    // template mode lets macOS render it monochrome and adapt
+                    // it to the light/dark menu bar automatically.
+                    .icon_as_template(true)
                     .tooltip("dsh desktop")
                     .menu(&tray_menu)
                     .show_menu_on_left_click(true)
