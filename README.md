@@ -41,13 +41,13 @@ pnpm desktop:dev        # tauri dev（需系统 Node；dsh 路径经 DSH_BIN 或
 
 本仓库把 cargo 缓存（`.cargo-home/`）与 pnpm store（`.pnpm-store/`）放在仓库内，规避用户级 npm 缓存问题（本机 `~/.npm` 损坏）与文件沙箱限制。
 
-## macOS 通知：替换构建后需手动刷新
+## macOS 通知：替换构建后的授权与手动刷新
 
 macOS 把通知授权绑定在应用的**代码签名身份**上（`Identifier` + `CDHash` + 绑定进签名的 `Info.plist`），而不是应用名字：
 
 - 打包必须做正规 bundle 签名（已配置 `bundle.macOS.signingIdentity: "-"`）。否则签名身份与 `CFBundleIdentifier` 不一致（曾出现 `Identifier=dsh_desktop-<hash>`、`Info.plist=not bound`），`usernoted` 无法识别应用，授权请求被直接拒绝（`UNErrorDomain error 1`：Notifications are not allowed for this application）且**永不弹出授权对话框**。
-- 当前是 ad-hoc 签名，`CDHash` 每次构建都会变，所以**每替换一次构建，通知授权就失效一次**——替换后首次触发审批/提问时需要重新点「允许」。
-- 替换 `.app` 后运行（刷新通知守护进程与 LaunchServices 残留记录）：
+- 当前是 ad-hoc 签名，`CDHash` 每次构建都会变，所以**每替换一次构建，通知授权就失效一次**——正常情况下替换后**首次启动即弹出授权对话框**（系统无记录 → 主动询问），点「允许」即可，无需其他操作。
+- 仅当启动后**没有**弹出授权提示时（通常发生在多次替换、`usernoted`/LaunchServices 残留旧记录时），运行脚本刷新：
 
   ```bash
   pnpm notify:refresh    # = bash scripts/refresh-notifications.sh [app路径]

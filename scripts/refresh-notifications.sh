@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
-# 替换 dsh desktop.app 之后，刷新 macOS 的通知身份记录。
+# 替换 dsh desktop.app 之后，刷新 macOS 的通知身份记录（排查工具）。
 #
-# 为什么需要：macOS 把通知授权绑定在应用的代码签名身份上
+# 为什么存在：macOS 把通知授权绑定在应用的代码签名身份上
 # （Identifier + CDHash + 绑定的 Info.plist）。替换 bundle 后，
 # usernoted（通知守护进程）和 LaunchServices 可能残留旧记录，导致
 # requestAuthorization 以 "UNErrorDomain error 1（Notifications are not
 # allowed for this application）" 直接拒绝，且永不弹出授权对话框。
-# 本脚本重启 usernoted、清除隔离属性并向 LaunchServices 重新注册。
+#
+# 注意：正常情况下替换后首次启动就会弹出授权对话框（新 CDHash →
+# 系统无记录 → 主动询问），无需本脚本。仅当授权提示没有出现时运行
+# 本脚本：重启 usernoted、清除隔离属性并向 LaunchServices 重新注册。
 #
 # 用法：
 #   scripts/refresh-notifications.sh ["/path/to/dsh desktop.app"]
@@ -52,6 +55,6 @@ echo "已注册：$APP"
 echo
 echo "完成。请启动应用并验证："
 echo "  open \"$APP\""
-echo "首次审批/提问事件会弹出 macOS 通知授权对话框，请点「允许」。"
+echo "启动时（或首次审批/提问事件）应弹出 macOS 通知授权对话框，请点「允许」。"
 echo "注意：ad-hoc 签名的 CDHash 每次构建都会变，替换新构建后需重新授权一次；"
 echo "永久方案是 Developer ID 签名（M5-3）。"
