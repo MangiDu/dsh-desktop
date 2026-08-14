@@ -89,24 +89,35 @@ pub mod sysnotify {
     /// Ask macOS for notification permission. The system prompt appears only
     /// when the status is still notDetermined; a previous deny/grant is
     /// answered silently and re-requests never re-prompt (that is macOS
-    /// policy, not something code can override).
+    /// policy, not something code can override). Must be called on the main
+    /// thread — UNUserNotificationCenter answers silently (granted=false,
+    /// no prompt) when the request comes from a background queue.
     pub fn request_permission(app: &tauri::AppHandle) {
         if !in_app_bundle() {
             super::diag(app, "sysnotify: unbundled dev binary, system notifications unavailable");
             return;
         }
-        let center = UNUserNotificationCenter::currentNotificationCenter();
         let app = app.clone();
-        let handler = RcBlock::new(move |granted: Bool, _err: *mut NSError| {
-            super::diag(
-                &app,
-                &format!("sysnotify: authorization request answered: granted={}", granted.as_bool()),
+        let _ = app.clone().run_on_main_thread(move || {
+            let center = UNUserNotificationCenter::currentNotificationCenter();
+            let app2 = app.clone();
+            let handler = RcBlock::new(move |granted: Bool, err: *mut NSError| {
+                let emsg = unsafe { err.as_ref() }
+                    .map(|e| e.localizedDescription().to_string())
+                    .unwrap_or_default();
+                super::diag(
+                    &app2,
+                    &format!(
+                        "sysnotify: authorization request answered: granted={} err={emsg:?}",
+                        granted.as_bool()
+                    ),
+                );
+            });
+            center.requestAuthorizationWithOptions_completionHandler(
+                UNAuthorizationOptions::Alert | UNAuthorizationOptions::Sound | UNAuthorizationOptions::Badge,
+                &handler,
             );
         });
-        center.requestAuthorizationWithOptions_completionHandler(
-            UNAuthorizationOptions::Alert | UNAuthorizationOptions::Sound | UNAuthorizationOptions::Badge,
-            &handler,
-        );
     }
 
     /// Read the live authorization status and pass its numeric value to `f`.
@@ -184,9 +195,9 @@ pub mod sysnotify {
 /// Event entry point: the in-app toast banner always shows (guaranteed,
 /// permission-free channel); on macOS a best-effort system banner is added
 /// on top when the notification authorization allows it.
-pub fn notify_event(app: &AppHandle, shared: &Arc<crate::dsh::Shared>, title: &str, body: &str) {
+pub fn notify_event(app: &AppHandle, shared: &Arc<crate::dsh::Shared>, title: &str, body: &str, sticky: bool) {
     diag(app, &format!("notify: {title} :: {body}"));
-    toast(app, shared, title, body);
+    toast(app, shared, title, body, sticky);
     #[cfg(target_os = "macos")]
     sysnotify::notify_if_authorized(app, title, body);
 }
@@ -221,10 +232,13 @@ struct ToastPayload {
     body: String,
 }
 
-/// Non-blocking, web-notification-style banner in the top-right corner:
-/// always-on-top but never steals focus, auto-hides after 6s, and focuses
-/// the main window only when the user clicks it.
-pub fn toast(app: &AppHandle, shared: &Arc<crate::dsh::Shared>, title: &str, body: &str) {
+/// Non-blocking banner that anchors itself where the user is looking (the
+/// top-right corner of the dsh main window, or the primary monitor when
+/// there is no main window): always-on-top but never steals focus, focuses
+/// the main window only when clicked. `sticky` banners (approval, question,
+/// agent-error) stay until clicked or resolved instead of auto-hiding —
+/// a blocking request must not disappear after 6 seconds.
+pub fn toast(app: &AppHandle, shared: &Arc<crate::dsh::Shared>, title: &str, body: &str, sticky: bool) {
     println!("[dsh] alert: {title} :: {body}");
     diag(app, &format!("toast: showing banner ({title})"));
     // Store the payload first: a freshly created toast window loads the
@@ -242,15 +256,20 @@ pub fn toast(app: &AppHandle, shared: &Arc<crate::dsh::Shared>, title: &str, bod
             body: body.to_string(),
         },
     );
-    // The toast window persists after its 6s auto-hide (or a click-dismiss)
-    // but stays hidden forever — every event after the first would update
-    // text in an invisible window. Re-show it on each event; doing it after
-    // the emit means the fresh payload is what renders. A brand-new window
-    // created by ensure_toast is visible by default and may not exist yet
-    // when this line runs, so both branches are safe (show is idempotent
-    // and never steals focus on macOS: it sets visibility, not key status).
+    // The toast window persists after auto-hide/click-dismiss but stays
+    // hidden forever — every event after the first would update text in an
+    // invisible window. Re-position (the main window may have moved to
+    // another display) and re-show it on each event; doing it after the emit
+    // means the fresh payload is what renders. A brand-new window created
+    // by ensure_toast is visible by default and may not exist yet when this
+    // line runs, so both branches are safe.
     if let Some(w) = app.get_webview_window(TOAST_LABEL) {
+        let (x, y) = toast_anchor(app, 400.0, 128.0);
+        let _ = w.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)));
         let _ = w.show();
+    }
+    if sticky {
+        return; // stays until click-dismissed or the request resolves
     }
     let app = app.clone();
     std::thread::spawn(move || {
@@ -258,10 +277,43 @@ pub fn toast(app: &AppHandle, shared: &Arc<crate::dsh::Shared>, title: &str, bod
         if TOAST_SEQ.load(Ordering::SeqCst) != seq {
             return; // superseded by a newer toast
         }
-        if let Some(w) = app.get_webview_window(TOAST_LABEL) {
-            let _ = w.hide();
-        }
+        hide_toast(&app);
     });
+}
+
+fn hide_toast(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window(TOAST_LABEL) {
+        let _ = w.hide();
+    }
+}
+
+/// Where the banner should land (logical coordinates): the top-right corner
+/// of the viewport the user is facing — the display containing the dsh main
+/// window. On a multi-display setup the primary monitor's corner can sit on
+/// a screen the user is not looking at (seen in the wild: the banner landed
+/// at x=3176 while the main window sat at x=260). Falls back to the primary
+/// monitor, then to a safe default.
+fn toast_anchor(app: &AppHandle, tw: f64, _th: f64) -> (f64, f64) {
+    let monitor = app
+        .get_webview_window(crate::dsh::MAIN_LABEL)
+        .and_then(|w| {
+            // A point well inside the main window, in global logical coords.
+            let scale = w.scale_factor().unwrap_or(1.0);
+            let (cx, cy) = w
+                .outer_position()
+                .map(|p| (p.x as f64 / scale + 100.0, p.y as f64 / scale + 100.0))
+                .unwrap_or((0.0, 0.0));
+            app.monitor_from_point(cx, cy).ok().flatten()
+        })
+        .or_else(|| app.primary_monitor().ok().flatten());
+    if let Some(m) = monitor {
+        let scale = m.scale_factor();
+        let mx = m.position().x as f64 / scale;
+        let my = m.position().y as f64 / scale;
+        let mw = m.size().width as f64 / scale;
+        return (mx + mw - tw - 24.0, my + 24.0);
+    }
+    (100.0, 100.0)
 }
 
 fn ensure_toast(app: &AppHandle) {
@@ -271,16 +323,11 @@ fn ensure_toast(app: &AppHandle) {
     let app = app.clone();
     let _ = app.clone().run_on_main_thread(move || {
         let (tw, th) = (400.0f64, 128.0f64);
-        let (mw, _mh) = app
-            .primary_monitor()
-            .ok()
-            .flatten()
-            .map(|m| (m.size().width as f64, m.size().height as f64))
-            .unwrap_or((1920.0, 1080.0));
+        let (x, y) = toast_anchor(&app, tw, th);
         let built = WebviewWindowBuilder::new(&app, TOAST_LABEL, WebviewUrl::App("toast.html".into()))
             .title("dsh desktop")
             .inner_size(tw, th)
-            .position(mw - tw - 24.0, 24.0)
+            .position(x, y)
             .decorations(false)
             .resizable(false)
             .always_on_top(true)
@@ -291,7 +338,7 @@ fn ensure_toast(app: &AppHandle) {
         if let Err(e) = built {
             diag(&app, &format!("toast: create window failed: {e}"));
         } else {
-            diag(&app, "toast: window created (visible by default)");
+            diag(&app, &format!("toast: window created at ({x:.0},{y:.0})"));
         }
     });
 }
@@ -321,6 +368,7 @@ pub fn handle_frame(app: &AppHandle, shared: &Arc<crate::dsh::Shared>, kind: &st
                 shared,
                 "dsh 请求权限",
                 &format!("dsh 想要执行「{tool}」{reason}，请在窗口中批准或拒绝。"),
+                true,
             );
         }
         "question/requested" => {
@@ -335,15 +383,17 @@ pub fn handle_frame(app: &AppHandle, shared: &Arc<crate::dsh::Shared>, kind: &st
                 shared,
                 "dsh 需要你的回答",
                 &format!("dsh 向你提出了 {n} 个问题，请在窗口中回答。"),
+                true,
             );
         }
         "approval/resolved" | "question/resolved" => {
             badge(app, None);
+            hide_toast(app);
         }
         "host/agent-error" => {
             let msg = extra.get("message").and_then(|v| v.as_str()).unwrap_or("未知错误");
             badge(app, Some(1));
-            notify_event(app, shared, "dsh 会话出错", msg);
+            notify_event(app, shared, "dsh 会话出错", msg, true);
         }
         "stream/error" => {
             let msg = extra
@@ -351,7 +401,7 @@ pub fn handle_frame(app: &AppHandle, shared: &Arc<crate::dsh::Shared>, kind: &st
                 .and_then(|v| v.get("message"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("未知错误");
-            notify_event(app, shared, "dsh 事件流错误", msg);
+            notify_event(app, shared, "dsh 事件流错误", msg, false);
         }
         _ => {}
     }

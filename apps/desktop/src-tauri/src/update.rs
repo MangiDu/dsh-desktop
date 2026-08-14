@@ -397,11 +397,12 @@ fn auto_install(
                 shared,
                 "dsh 更新",
                 &format!("v{version} 已就绪，重启 dsh 后生效（菜单「重启 dsh」）。"),
+                false,
             );
         }
         Err(e) => {
             record_update(app, &info.current, &info.latest, "failed", Some(e.clone()));
-            crate::listener::notify_event(app, shared, "dsh 更新", &format!("自动更新失败：{e}"));
+            crate::listener::notify_event(app, shared, "dsh 更新", &format!("自动更新失败：{e}"), false);
         }
     }
     shared.install_busy.store(false, Ordering::SeqCst);
