@@ -36,3 +36,4 @@ tokio = { version = "1.53.1", features = ["time"] }
 semver = { version = "1.0.28", features = ["serde"] }
 objc2-user-notifications = "0.3.2"
 block2 = "0.6.2"
+objc2-web-kit = "0.3.2"

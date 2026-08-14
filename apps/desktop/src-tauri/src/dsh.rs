@@ -506,6 +506,23 @@ fn on_ready(app: &AppHandle, shared: &Arc<Shared>, id: u64, port: u16) {
             .build()
         {
             Ok(window) => {
+                // macOS: disable Force Touch pressure handling on the
+                // WKWebView. A firm press on a word triggers the system
+                // Look-Up gesture, which consumes the click (the mouseup
+                // arrives with click count 0 and no click event follows):
+                // the GUI then needs a second, lighter click. Browsers do
+                // not implement Look-Up, which is why the web version
+                // never shows this. Setting the pressure configuration to
+                // nil disables all pressure behaviours (Apple docs).
+                #[cfg(target_os = "macos")]
+                {
+                    let _ = window.as_ref().with_webview(|wv| {
+                        let wk = wv.inner() as *mut objc2_web_kit::WKWebView;
+                        unsafe {
+                            (*wk).setPressureConfiguration(None);
+                        }
+                    });
+                }
                 // Close-button confirmation: fully quit, or keep running in
                 // the background (hidden; restored via the Dock icon).
                 let shared4 = shared3.clone();
