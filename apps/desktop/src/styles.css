@@ -127,7 +127,8 @@ h1 {
 }
 
 .setting-row select,
-.setting-row input {
+.setting-row input[type="text"],
+.setting-row input[type="number"] {
   appearance: none;
   border: 1px solid #34343e;
   background: #17171c;
@@ -136,6 +137,14 @@ h1 {
   padding: 7px 10px;
   font-size: 13px;
   min-width: 0;
+}
+
+.setting-row input[type="checkbox"] {
+  appearance: auto;
+  width: 15px;
+  height: 15px;
+  accent-color: #4d7cfe;
+  margin: 0;
 }
 
 .setting-row input[type="number"],
