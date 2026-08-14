@@ -341,9 +341,6 @@ async function loadSettings() {
     ($("set-interval") as HTMLInputElement).value = String(s.intervalHours);
     ($("set-registry") as HTMLInputElement).value = s.registry;
     ($("set-keep-versions") as HTMLInputElement).value = String(s.keepVersions ?? 1);
-    $("workspace-path").textContent = s.lastProjectDir
-      ? `当前：${s.lastProjectDir}`
-      : "当前：默认（~/dsh-desktop-workspace）";
     $("settings-status").textContent = "";
   } catch (err) {
     $("settings-status").textContent = `加载失败：${err}`;
@@ -375,21 +372,6 @@ $("btn-settings-save").addEventListener("click", async () => {
   }
 });
 
-// Workspace selection (default-workspace anchor for the dsh child).
-$("btn-workspace-choose").addEventListener("click", async () => {
-  $("settings-status").textContent = "请选择目录…";
-  try {
-    const path = await invoke<string | null>("workspace_choose");
-    if (path) {
-      $("workspace-path").textContent = `当前：${path}`;
-      $("settings-status").textContent = "工作区已切换，dsh 正在重启…";
-    } else {
-      $("settings-status").textContent = "";
-    }
-  } catch (err) {
-    $("settings-status").textContent = `切换失败：${err}`;
-  }
-});
 
 function openPanel(intent: string | null) {
   if (intent === "plugin") show("plugin");
