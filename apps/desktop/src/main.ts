@@ -347,6 +347,13 @@ async function loadSettings() {
     ($("set-interval") as HTMLInputElement).value = String(s.intervalHours);
     ($("set-registry") as HTMLInputElement).value = s.registry;
     ($("set-keep-versions") as HTMLInputElement).value = String(s.keepVersions ?? 1);
+    invoke<string>("dsh_home_info")
+      .then((home) => {
+        $("dsh-home-path").textContent = home;
+      })
+      .catch(() => {
+        $("dsh-home-path").textContent = "（无法解析）";
+      });
     $("settings-status").textContent = "";
   } catch (err) {
     $("settings-status").textContent = `加载失败：${err}`;

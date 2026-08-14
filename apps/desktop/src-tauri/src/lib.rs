@@ -209,6 +209,20 @@ fn resolve_plugin_root(root: &std::path::Path) -> Result<std::path::PathBuf, Str
     }
 }
 
+/// The dsh data directory (DSH_HOME; ~/.dsh by default) — same value the
+/// dsh child resolves.
+#[tauri::command]
+fn dsh_home_info(app: AppHandle) -> String {
+    match std::env::var("DSH_HOME") {
+        Ok(v) if !v.trim().is_empty() => v,
+        _ => app
+            .path()
+            .home_dir()
+            .map(|h| h.join(".dsh").to_string_lossy().to_string())
+            .unwrap_or_else(|_| "~/.dsh".to_string()),
+    }
+}
+
 /// The panel the shell UI should show on load, consumed once.
 #[tauri::command]
 fn ui_intent(state: tauri::State<'_, AppState>) -> Option<String> {
@@ -334,7 +348,8 @@ pub fn run() {
             update::update_history_list,
             close_choice,
             dsh_plugin_offline,
-            runtime_reset
+            runtime_reset,
+            dsh_home_info
         ])
         .setup(|app| {
             let shared = app.state::<AppState>().0.clone();
